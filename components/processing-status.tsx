@@ -1,0 +1,146 @@
+import type { OcrStatus } from "@/components/ocr-workflow";
+import { Spinner } from "@/components/spinner";
+
+const statusCopy: Record<OcrStatus, string> = {
+  idle: "Esperando archivo",
+  validating: "Validando archivo...",
+  ready: "Archivo listo para procesar",
+  processing: "Procesando archivo...",
+  done: "Procesamiento completado",
+  error: "No pudimos procesar el archivo",
+};
+
+type ResultQuality = "ai" | "partial" | "local-fallback";
+
+type ProcessingStatusProps = {
+  status: OcrStatus;
+  details?: string;
+  resultQuality?: ResultQuality;
+  technicalDetail?: string;
+};
+
+export function ProcessingStatus({
+  status,
+  details,
+  resultQuality,
+  technicalDetail,
+}: ProcessingStatusProps) {
+  const isError = status === "error";
+  const isDone = status === "done";
+  const isBusy = status === "validating" || status === "processing";
+  const title = isError ? getErrorTitle(details) : getStatusTitle(status, details, resultQuality);
+  const description = isError ? getErrorDescription(details) : details;
+
+  return (
+    <div
+      className={`rounded-2xl border px-4 py-3 text-sm shadow-sm ${
+        isError
+          ? "border-red-200 bg-red-50 text-red-700"
+          : isDone
+            ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+            : "border-brand-border bg-brand-soft/70 text-brand-slate"
+      }`}
+      aria-live="polite"
+    >
+      <p className="flex items-center gap-2">
+        {isBusy ? <Spinner /> : null}
+        <span className="font-semibold">Estado:</span> {title}
+      </p>
+      {description ? <p className="mt-1 text-xs opacity-90">{description}</p> : null}
+      {technicalDetail ? (
+        <p className="mt-2 rounded-xl bg-white/60 px-3 py-2 text-xs opacity-90">
+          <span className="font-semibold">Detalle tecnico:</span> {technicalDetail}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function getStatusTitle(status: OcrStatus, details?: string, resultQuality?: ResultQuality) {
+  if (status === "done" && resultQuality === "partial") {
+    return "Procesamiento completado parcialmente";
+  }
+
+  if (status === "processing" && (details ?? "").toLowerCase().includes("minutos")) {
+    return "Procesando documento extenso...";
+  }
+
+  return statusCopy[status];
+}
+
+function getErrorTitle(details?: string) {
+  const normalized = (details ?? "").toLowerCase();
+
+  if (isMotorBusyError(normalized)) {
+    return "Motor temporalmente ocupado";
+  }
+
+  if (normalized.includes("no pudimos estructurar el archivo")) {
+    return "No pudimos estructurar el archivo";
+  }
+
+  if (
+    normalized.includes("limite por documento") ||
+    normalized.includes("límite por documento") ||
+    normalized.includes("tamaño maximo") ||
+    normalized.includes("tamaño máximo") ||
+    normalized.includes("tamaño") ||
+    normalized.includes("admiten hasta") ||
+    normalized.includes("archivo excede")
+  ) {
+    return "Archivo excede el tamaño maximo";
+  }
+
+  if (normalized.includes("pdf, jpg") || normalized.includes("formato")) {
+    return "Formato no compatible";
+  }
+
+  return "No pudimos procesar el archivo";
+}
+
+function getErrorDescription(details?: string) {
+  const normalized = (details ?? "").toLowerCase();
+
+  if (isMotorBusyError(normalized)) {
+    return "El servicio alcanzo temporalmente su limite de procesamiento. Espera unos minutos e intenta nuevamente.";
+  }
+
+  if (normalized.includes("no pudimos estructurar el archivo")) {
+    return "El documento fue leido parcialmente, pero no se obtuvo una tabla confiable. Proba con una imagen mas nitida o mas centrada.";
+  }
+
+  if (
+    normalized.includes("limite por documento") ||
+    normalized.includes("límite por documento") ||
+    normalized.includes("tamaño maximo") ||
+    normalized.includes("tamaño máximo") ||
+    normalized.includes("tamaño") ||
+    normalized.includes("admiten hasta") ||
+    normalized.includes("archivo excede")
+  ) {
+    return details;
+  }
+
+  if (normalized.includes("pdf, jpg") || normalized.includes("formato")) {
+    return "Subi un archivo PDF, JPG o PNG para continuar.";
+  }
+
+  return "Verifica que el documento sea legible y volve a intentarlo. Si el problema persiste, contactanos.";
+}
+
+function isMotorBusyError(normalized: string) {
+  return (
+    normalized.includes("motor temporalmente ocupado") ||
+    normalized.includes("limite de procesamiento") ||
+    normalized.includes("límite de procesamiento") ||
+    normalized.includes("429") ||
+    normalized.includes("too many requests") ||
+    normalized.includes("quota") ||
+    normalized.includes("cuota") ||
+    normalized.includes("resource exhausted") ||
+    normalized.includes("high demand") ||
+    normalized.includes("fetch failed") ||
+    normalized.includes("service unavailable") ||
+    normalized.includes("saturad")
+  );
+}

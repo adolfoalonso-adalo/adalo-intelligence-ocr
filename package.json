@@ -1,0 +1,46 @@
+{
+  "name": "adalo-intelligence-ocr",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.3.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "test:ocr-force-local": "node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --loader ./scripts/alias-loader.mjs scripts/test-ocr-force-local.mts",
+    "test:ocr-api-fallback": "node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --loader ./scripts/alias-loader.mjs scripts/test-ocr-api-fallback.mts",
+    "test:ocr-pdf-flow": "node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --loader ./scripts/alias-loader.mjs scripts/test-ocr-pdf-flow.mts",
+    "test:pdf-fallback": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-pdf-fallback.mts",
+    "test:pdf-structured-sections": "node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --loader ./scripts/alias-loader.mjs scripts/test-pdf-structured-sections.mts",
+    "test:pdf-table-fallback": "node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --loader ./scripts/alias-loader.mjs scripts/test-pdf-table-fallback.mts",
+    "test:quality-assessment": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-quality-assessment.mts",
+    "test:structured-output": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-structured-output.mts",
+    "hash:access-code": "node scripts/hash-access-code.cjs"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "next": "^15.0.0",
+    "next-auth": "^4.24.11",
+    "pdf-parse": "^2.4.5",
+    "pdfjs-dist": "^5.7.284",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "sharp": "^0.34.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@next/eslint-plugin-next": "^15.0.0",
+    "@types/node": "^22.10.2",
+    "@types/pdf-parse": "^1.1.5",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "autoprefixer": "^10.4.20",
+    "eslint": "^9.17.0",
+    "eslint-plugin-react-hooks": "^5.1.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.0"
+  }
+}
