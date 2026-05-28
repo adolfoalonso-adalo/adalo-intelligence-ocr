@@ -1,16 +1,8 @@
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  outputFileTracingRoot: process.cwd(),
   poweredByHeader: false,
-  outputFileTracingRoot: __dirname,
-  outputFileTracingIncludes: {
-    "/api/ocr/process": ["./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs"],
-  },
-  serverExternalPackages: ["pdf-parse", "pdfjs-dist", "sharp"],
+  serverExternalPackages: ["pdf-parse", "sharp"],
 };
 
 export default nextConfig;

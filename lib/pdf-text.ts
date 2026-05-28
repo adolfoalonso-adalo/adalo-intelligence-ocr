@@ -1,7 +1,3 @@
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-
 export type PdfTextPage = {
   pageNumber: number;
   text: string;
@@ -56,13 +52,10 @@ type PdfjsModule = {
     data: Uint8Array;
     useWorkerFetch?: boolean;
     isEvalSupported?: boolean;
-  disableFontFace?: boolean;
-  disableWorker?: boolean;
+    disableFontFace?: boolean;
+    disableWorker?: boolean;
   }) => {
     promise: Promise<PdfjsDocument>;
-  };
-  GlobalWorkerOptions?: {
-    workerSrc?: string;
   };
 };
 
@@ -193,10 +186,6 @@ async function extractWithLegacyPdfParse(
 
 async function extractWithPdfjsDist(fileBuffer: Buffer): Promise<{ pages: PdfTextPage[] }> {
   const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as PdfjsModule;
-
-  if (pdfjs.GlobalWorkerOptions) {
-    pdfjs.GlobalWorkerOptions.workerSrc = resolvePdfjsWorkerSrc();
-  }
 
   const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(fileBuffer),
@@ -336,16 +325,6 @@ function normalizePageText(value: string) {
 
 function normalizeLine(value: string) {
   return value.replace(/[ \t\f\v]+/g, " ").trim();
-}
-
-function resolvePdfjsWorkerSrc() {
-  const workerPath = resolve(process.cwd(), "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs");
-
-  if (existsSync(workerPath)) {
-    return pathToFileURL(workerPath).href;
-  }
-
-  return "";
 }
 
 function extractLiteralPdfStrings(raw: string) {
