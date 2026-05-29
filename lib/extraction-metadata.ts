@@ -5,6 +5,7 @@ export type ExtractionMetadataInput = {
   fields: number;
   originalFileName: string;
   outputFileName: string;
+  outputJsonFileName?: string;
   processedAt?: Date;
   records: number;
 };
@@ -16,6 +17,7 @@ export type ExtractionMetadata = {
   fields: number;
   originalFileName: string;
   outputFileName: string;
+  outputJsonFileName?: string;
   processedAt: string;
   records: number;
 };
@@ -27,6 +29,7 @@ export function createExtractionMetadata({
   fields,
   originalFileName,
   outputFileName,
+  outputJsonFileName,
   processedAt = new Date(),
   records,
 }: ExtractionMetadataInput): ExtractionMetadata {
@@ -37,6 +40,7 @@ export function createExtractionMetadata({
     fields,
     originalFileName,
     outputFileName,
+    outputJsonFileName,
     processedAt: processedAt.toISOString(),
     records,
   };

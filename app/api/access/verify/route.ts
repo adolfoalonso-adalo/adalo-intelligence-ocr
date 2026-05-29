@@ -6,6 +6,11 @@ import {
   getAccessRateLimitConfig,
   verifyAccessCode,
 } from "@/lib/access-code";
+import { validateAccessCodeFromDatabase } from "@/lib/access-code-db";
+import {
+  createAccessSessionCookie,
+  getAccessSessionCookieName,
+} from "@/lib/access-session";
 import { auth } from "@/lib/auth";
 import {
   createClientProfileCookie,
@@ -54,15 +59,28 @@ export async function POST(request: Request) {
     const body = (await request.json().catch(() => null)) as { code?: unknown } | null;
     const code = typeof body?.code === "string" ? body.code : "";
 
-    if (!code || !verifyAccessCode(code)) {
+    const dbValidation = code ? await validateAccessCodeFromDatabase(code) : null;
+    const isValidDbCode = dbValidation?.source === "db" && dbValidation.valid;
+    const isInvalidKnownDbCode = dbValidation?.source === "db" && !dbValidation.valid;
+    const isValidLegacyCode = dbValidation?.source !== "db" && Boolean(code && verifyAccessCode(code));
+
+    if (!code || isInvalidKnownDbCode || (!isValidDbCode && !isValidLegacyCode)) {
       return jsonResponse(
-        { success: false, error: "El código ingresado no es válido." },
+        {
+          success: false,
+          error:
+            isInvalidKnownDbCode && dbValidation && "error" in dbValidation
+              ? dbValidation.error
+              : "El código ingresado no es válido.",
+        },
         401,
         rateLimit,
       );
     }
 
-    const clientProfile = resolveClientProfileForAccessCode(code);
+    const clientProfile = isValidDbCode
+      ? { id: dbValidation.clientProfileId }
+      : resolveClientProfileForAccessCode(code);
     const response = jsonResponse({ success: true }, 200, rateLimit);
     response.cookies.set(getAccessCookieName(), createAccessCookie(), {
       httpOnly: true,
@@ -78,6 +96,22 @@ export async function POST(request: Request) {
       maxAge: getAccessCookieMaxAgeSeconds(),
       path: "/",
     });
+    response.cookies.set(
+      getAccessSessionCookieName(),
+      createAccessSessionCookie({
+        accessCodeId: isValidDbCode ? dbValidation.accessCodeId : undefined,
+        clientId: isValidDbCode ? dbValidation.clientId : undefined,
+        clientProfileId: clientProfile.id,
+        planId: isValidDbCode ? dbValidation.planId : undefined,
+      }),
+      {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        maxAge: getAccessCookieMaxAgeSeconds(),
+        path: "/",
+      },
+    );
 
     return response;
   } catch (error) {

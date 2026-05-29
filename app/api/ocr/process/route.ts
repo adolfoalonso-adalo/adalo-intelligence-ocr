@@ -1,6 +1,10 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { getAccessCookieName, verifyAccessCookie } from "@/lib/access-code";
+import {
+  getAccessSessionCookieName,
+  verifyAccessSessionCookie,
+} from "@/lib/access-session";
 import { auth } from "@/lib/auth";
 import {
   getClientProfileCookieName,
@@ -9,7 +13,9 @@ import {
   type ClientProfile,
 } from "@/lib/client-profiles";
 import { createCsvFileName, type CsvFileKind } from "@/lib/csv";
+import { parseCsvPreview } from "@/lib/csv-preview";
 import { normalizeDocumentType, type DocumentType } from "@/lib/document-type";
+import { createExtractionMetadata } from "@/lib/extraction-metadata";
 import {
   analyzeFileToCsv,
   CsvAnalysisError,
@@ -30,11 +36,17 @@ import {
   type RateLimitResult,
 } from "@/lib/rate-limit";
 import {
-  getMaxSizeBytesForMimeType,
+  getMaxSizeMbForMimeType,
   getFileSizeLimitMessage,
   getSupportedMimeType,
   isAllowedOcrFile,
 } from "@/lib/validations";
+import {
+  getOcrUsageContext,
+  getPlanAwareMaxSizeMb,
+  recordUsageEvent,
+  type OcrPlanContext,
+} from "@/lib/usage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -42,6 +54,11 @@ export const maxDuration = 300;
 
 export async function POST(request: Request) {
   const startedAt = Date.now();
+  let usageContext: OcrPlanContext | null = null;
+  let originalFileName = "";
+  let originalMimeType = "";
+  let originalFileSize = 0;
+  let estimatedDocumentType: DocumentType = "auto";
 
   try {
     console.info("[OCR API] env flags", {
@@ -79,6 +96,9 @@ export async function POST(request: Request) {
 
     const cookieStore = await cookies();
     const hasAccess = verifyAccessCookie(cookieStore.get(getAccessCookieName())?.value);
+    const accessSession = verifyAccessSessionCookie(
+      cookieStore.get(getAccessSessionCookieName())?.value,
+    );
     const clientProfile = verifyClientProfileCookie(
       cookieStore.get(getClientProfileCookieName())?.value,
     );
@@ -93,6 +113,28 @@ export async function POST(request: Request) {
         rateLimit,
       );
     }
+
+    const usageCheck = await getOcrUsageContext(accessSession);
+
+    if (!usageCheck.allowed) {
+      await recordUsageEvent({
+        context: usageCheck.context,
+        durationMs: Date.now() - startedAt,
+        errorType: "usage_limit_reached",
+        status: "error",
+      });
+
+      return jsonResponse(
+        {
+          success: false,
+          error: usageCheck.message,
+        },
+        usageCheck.status,
+        rateLimit,
+      );
+    }
+
+    usageContext = usageCheck.context;
 
     const contentType = request.headers.get("content-type") || "";
 
@@ -139,13 +181,32 @@ export async function POST(request: Request) {
 
     let fileBuffer: Buffer = Buffer.from(await file.arrayBuffer());
     let mimeType = getSupportedMimeType(file);
+    originalFileName = file.name;
+    originalMimeType = mimeType;
+    originalFileSize = file.size;
     const documentType = resolveDocumentTypeForProfile(detectedDocumentType, clientProfile);
+    estimatedDocumentType = documentType;
+    const globalSizeLimitMb = getMaxSizeMbForMimeType(mimeType);
+    const effectiveSizeLimitMb = getPlanAwareMaxSizeMb(mimeType, usageContext, globalSizeLimitMb);
 
-    if (file.size > getMaxSizeBytesForMimeType(mimeType)) {
+    if (file.size > effectiveSizeLimitMb * 1024 * 1024) {
+      await recordUsageEvent({
+        context: usageContext,
+        durationMs: Date.now() - startedAt,
+        errorType: "file_size_limit",
+        estimatedDocumentType,
+        fileMimeType: mimeType,
+        fileSizeBytes: file.size,
+        originalFileName: file.name,
+        status: "error",
+      });
+
       return jsonResponse(
         {
           success: false,
-          error: getFileSizeLimitMessage(mimeType),
+          error: usageContext
+            ? getPlanFileSizeLimitMessage(mimeType, effectiveSizeLimitMb)
+            : getFileSizeLimitMessage(mimeType),
         },
         400,
         rateLimit,
@@ -243,7 +304,13 @@ export async function POST(request: Request) {
         rateLimit,
         file.name,
         "local-fallback",
-        { clientProfile, documentType },
+        {
+          clientProfile,
+          documentType,
+          usageContext,
+          sourceFileSize: file.size,
+          sourceMimeType: mimeType,
+        },
       );
     }
 
@@ -276,6 +343,9 @@ export async function POST(request: Request) {
       return successResponse(analysis, startedAt, rateLimit, file.name, "ocr-analysis", {
         clientProfile,
         documentType,
+        usageContext,
+        sourceFileSize: file.size,
+        sourceMimeType: mimeType,
       });
     } catch (analysisError) {
       console.warn("[OCR API] analyzeFileToCsv failed", getSafeErrorLog(analysisError));
@@ -310,7 +380,13 @@ export async function POST(request: Request) {
               rateLimit,
               file.name,
               "local-fallback",
-              { clientProfile, documentType },
+              {
+                clientProfile,
+                documentType,
+                usageContext,
+                sourceFileSize: file.size,
+                sourceMimeType: mimeType,
+              },
             );
           }
 
@@ -335,6 +411,17 @@ export async function POST(request: Request) {
 
     logApiTiming("total", startedAt, {
       strategy: "error",
+    });
+
+    await recordUsageEvent({
+      context: usageContext,
+      durationMs: Date.now() - startedAt,
+      errorType: safeError.technicalDetail,
+      estimatedDocumentType,
+      fileMimeType: originalMimeType,
+      fileSizeBytes: originalFileSize,
+      originalFileName,
+      status: "error",
     });
 
     const body: Record<string, unknown> = {
@@ -363,7 +450,7 @@ export {
   methodNotAllowed as PUT,
 };
 
-function successResponse(
+async function successResponse(
   result: {
     csvContent: string;
     fileName: string;
@@ -378,14 +465,51 @@ function successResponse(
   context: {
     clientProfile?: ClientProfile;
     documentType?: DocumentType;
+    sourceFileSize?: number;
+    sourceMimeType?: string;
+    usageContext?: OcrPlanContext | null;
   } = {},
 ) {
   const durationMs = Date.now() - startedAt;
-  const fileName = createCsvFileName(resolveCsvFileKind(result, strategy, context));
+  const extractionKind = resolveCsvFileKind(result, strategy, context);
+  const fileName = createCsvFileName(extractionKind);
+  const jsonFileName = fileName.replace(/\.csv$/i, ".json");
+  const parsedCsv = parseCsvPreview(result.csvContent);
+  const columns = parsedCsv.columns;
+  const rows = parsedCsv.rows.map((row) =>
+    Object.fromEntries(columns.map((column, index) => [column, row[index] ?? ""])),
+  );
+  const metadata = createExtractionMetadata({
+    clientProfileId: context.clientProfile?.id,
+    durationMs,
+    extractionKind,
+    fields: columns.length,
+    originalFileName: sourceFileName ?? "",
+    outputFileName: fileName,
+    outputJsonFileName: jsonFileName,
+    records: rows.length,
+  });
+  const jsonContent = JSON.stringify({ metadata, columns, rows }, null, 2);
+  const allowJsonExport = context.usageContext?.plan.allowJsonExport ?? true;
   logApiTiming("total", startedAt, {
     fileName: sourceFileName,
     model: result.modelUsed,
     strategy,
+  });
+
+  await recordUsageEvent({
+    context: context.usageContext ?? null,
+    durationMs,
+    estimatedDocumentType: context.documentType,
+    extractionKind,
+    fields: columns.length,
+    fileMimeType: context.sourceMimeType,
+    fileSizeBytes: context.sourceFileSize,
+    originalFileName: sourceFileName,
+    outputCsvFileName: fileName,
+    outputJsonFileName: allowJsonExport ? jsonFileName : undefined,
+    records: rows.length,
+    status: "success",
   });
 
   return jsonResponse(
@@ -393,6 +517,9 @@ function successResponse(
       success: true,
       csvContent: result.csvContent,
       fileName,
+      jsonContent: allowJsonExport ? jsonContent : undefined,
+      jsonFileName: allowJsonExport ? jsonFileName : undefined,
+      allowJsonExport,
       extractedRows: result.extractedRows,
       modelUsed: result.modelUsed,
       resultQuality: result.resultQuality,
@@ -518,6 +645,18 @@ function jsonResponse(body: Record<string, unknown>, status: number, rateLimit: 
     status,
     headers: createRateLimitHeaders(rateLimit),
   });
+}
+
+function getPlanFileSizeLimitMessage(mimeType: string, limitMb: number) {
+  if (mimeType === "application/pdf") {
+    return `Archivo excede el tamaño máximo. Tu plan permite PDFs de hasta ${limitMb} MB.`;
+  }
+
+  if (mimeType === "image/jpeg" || mimeType === "image/png") {
+    return `Archivo excede el tamaño máximo. Tu plan permite imágenes de hasta ${limitMb} MB.`;
+  }
+
+  return `Archivo excede el tamaño máximo. Tu plan permite archivos de hasta ${limitMb} MB.`;
 }
 
 function isForceLocalPdfFallbackEnabled() {

@@ -2,13 +2,13 @@
 
 Nota de UI: la herramienta muestra `Motor ADALO` en los resultados para mantener una experiencia simple y profesional. Los modelos reales usados internamente, como Gemini, fallback o Gemma experimental, quedan en logs del servidor y variables de entorno.
 
-Aplicación web simple para convertir documentos PDF en CSV mediante análisis OCR/IA con Google AI.
+Aplicación web simple para convertir documentos PDF, JPG y PNG en CSV/JSON mediante análisis OCR/IA con Google AI.
 
-La app mantiene un flujo único: iniciar sesión con Google, validar un código privado de ADALO, cargar un archivo, procesarlo del lado servidor y descargar un CSV. No guarda archivos ni CSV permanentemente.
+La app mantiene un flujo único: iniciar sesión con Google, validar un código privado de ADALO, cargar un archivo, procesarlo del lado servidor, revisar una vista previa y descargar CSV/JSON. No guarda archivos originales ni resultados completos permanentemente.
 
 La app usa como estrategia principal JSON estructurado generado por Google AI y convertido a CSV seguro del lado servidor. Para robustecer el MVP, si el modelo devuelve CSV directo, el servidor lo parsea, lo normaliza y vuelve a generar un CSV seguro. Si devuelve texto libre, se intenta una segunda llamada corta para reparar esa salida a JSON estructurado. Si todo eso falla y el PDF tiene texto extraíble, se genera un CSV local básico con columnas `Página`, `Línea` y `Texto`.
 
-Despues del procesamiento, la UI muestra una vista previa compacta de los primeros registros y permite descargar el CSV completo.
+Despues del procesamiento, la UI muestra una vista previa compacta de los primeros registros y permite descargar el CSV completo y, si el plan lo permite, un JSON con metadata, columnas y filas.
 
 ## Instalación con pnpm
 
@@ -46,6 +46,79 @@ pnpm hash:access-code "ADALO-2026-CLIENTE"
 ## Variables de entorno
 
 Creá un archivo `.env.local` basado en `.env.example`:
+
+Variables administrativas nuevas:
+
+```env
+DATABASE_URL=""
+ADMIN_EMAILS="adolfoalonso19@gmail.com"
+```
+
+`DATABASE_URL` habilita la administración manual con Postgres/Supabase Postgres. Si no está configurada, el OCR conserva compatibilidad temporal con `ACCESS_CODE_HASHES`.
+
+`ADMIN_EMAILS` es una lista separada por comas de cuentas Google autorizadas para entrar a `/admin`.
+
+La protección de `/admin` es server-side: la página, las server actions y las APIs administrativas validan sesión Google y comparan el email normalizado contra `ADMIN_EMAILS` antes de cargar datos o ejecutar acciones. Un usuario sin sesión es redirigido al login; un usuario logueado pero no autorizado ve `Acceso denegado`.
+
+Prueba recomendada de seguridad:
+
+1. Abrir una ventana incógnito y entrar a `/admin`: debe bloquear o redirigir.
+2. Iniciar sesión con un email que no esté en `ADMIN_EMAILS`: debe mostrar `Acceso denegado`.
+3. Iniciar sesión con un email autorizado: debe mostrar la administración.
+
+## Base de datos y admin
+
+La fase administrativa agrega una base Postgres mínima para controlar clientes, planes, códigos y metadata de uso. No guarda PDFs, imágenes, CSV completo, JSON completo ni contenido sensible extraído.
+
+Comandos:
+
+```bash
+corepack pnpm db:migrate
+corepack pnpm db:seed
+```
+
+El seed crea los planes iniciales `Demo`, `Piloto`, `Basico`, `Profesional` y `Empresa`, y agrega como administradores los correos definidos en `ADMIN_EMAILS`.
+
+Para usar `/admin`:
+
+1. Configurá `DATABASE_URL` y `ADMIN_EMAILS`.
+2. Ejecutá migraciones y seed.
+3. Iniciá sesión con Google usando un correo autorizado.
+4. Entrá a `/admin`.
+5. Creá clientes, asigná perfil/plan y generá códigos de acceso.
+
+Los códigos se muestran completos solo al generarlos. La base guarda el hash SHA-256, un alias visual y metadata operativa. La validación de acceso intenta primero la base `access_codes`; si no hay DB o no encuentra el código, usa `ACCESS_CODE_HASHES` como compatibilidad temporal.
+
+## Planes y usos
+
+Cada código queda asociado a un cliente y un plan. Antes de procesar OCR, la API valida:
+
+- cliente activo;
+- código activo, no revocado y no vencido;
+- plan activo;
+- límite diario;
+- límite mensual;
+- límite de tamaño por tipo de archivo.
+
+Los límites globales `MAX_PDF_SIZE_MB` y `MAX_IMAGE_SIZE_MB` siguen funcionando como techo máximo. Si el plan tiene un límite menor, se aplica el límite del plan.
+
+La tabla `usage_events` registra solo metadata: cliente, código, estado, nombre original del archivo, nombre de salida, MIME, tamaño, tipo estimado, registros, campos, duración y error controlado si lo hubo. No registra archivos ni resultados completos.
+
+## Descarga JSON
+
+El procesamiento genera una estructura base:
+
+```json
+{
+  "metadata": {},
+  "columns": [],
+  "rows": []
+}
+```
+
+Desde esa misma estructura se entregan CSV y JSON. No se hace una segunda llamada a la IA para generar JSON.
+
+Si el plan tiene `allowJsonExport=true`, la UI muestra `Descargar datos (.json)`. Si el plan no lo permite, el botón no se muestra.
 
 ```env
 NEXT_PUBLIC_SITE_URL="http://localhost:3000"
@@ -121,17 +194,19 @@ Antes de generar el archivo, el servidor normaliza los nombres de columnas:
 
 Esto facilita el uso posterior en Power Automate, SharePoint y Microsoft Lists. La app no sube archivos automaticamente a Microsoft 365 en esta fase.
 
+La descarga JSON contiene metadata operativa, columnas y filas, pensada para integraciones externas o auditorias livianas del cliente. ADALO OCR no almacena ese JSON completo.
+
 ## Uso con Power Automate / Microsoft 365
 
 Flujo recomendado para pilotos:
 
-1. El usuario procesa el documento en ADALO OCR y descarga el CSV.
-2. El usuario sube el CSV a una carpeta de SharePoint.
+1. El usuario procesa el documento en ADALO OCR y descarga el CSV o JSON.
+2. El usuario sube el archivo exportado a una carpeta de SharePoint.
 3. Power Automate detecta el archivo nuevo.
 4. El flujo externo lee el CSV.
 5. Luego puede cargar datos en Microsoft Lists, Excel, SharePoint, Power BI o enviar correos.
 
-ADALO OCR no almacena archivos, no guarda CSVs y no mantiene trazabilidad interna en esta etapa. La trazabilidad, validaciones, alertas y registros historicos se implementan en el flujo externo del cliente.
+ADALO OCR no almacena archivos, no guarda CSVs/JSON completos y solo conserva metadata de uso cuando la base administrativa esta configurada. La trazabilidad, validaciones, alertas y registros historicos detallados se implementan en el flujo externo del cliente.
 
 ## Detección interna del documento
 

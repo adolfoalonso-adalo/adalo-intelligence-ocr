@@ -1,0 +1,109 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Client {
+  id          String   @id @default(cuid())
+  name        String
+  legalName   String?
+  email       String?
+  contactName String?
+  phone       String?
+  status      String   @default("active")
+  profileId   String   @default("general")
+  notes       String?
+  planId      String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  plan        Plan?        @relation(fields: [planId], references: [id], onDelete: SetNull)
+  accessCodes AccessCode[]
+  usageEvents UsageEvent[]
+
+  @@map("clients")
+}
+
+model Plan {
+  id                  String   @id @default(cuid())
+  name                String   @unique
+  description         String?
+  dailyLimit          Int
+  monthlyLimit        Int
+  maxPdfSizeMb        Int
+  maxImageSizeMb      Int
+  allowJsonExport     Boolean  @default(true)
+  allowCustomProfile  Boolean  @default(false)
+  isActive            Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  clients     Client[]
+  accessCodes AccessCode[]
+
+  @@map("plans")
+}
+
+model AccessCode {
+  id                String    @id @default(cuid())
+  clientId          String
+  planId            String
+  codeHash          String    @unique
+  codeAlias         String?
+  displayCodePrefix String?
+  status            String    @default("active")
+  expiresAt         DateTime?
+  lastUsedAt        DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  client      Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  plan        Plan         @relation(fields: [planId], references: [id], onDelete: Restrict)
+  usageEvents UsageEvent[]
+
+  @@index([clientId])
+  @@index([planId])
+  @@map("access_codes")
+}
+
+model UsageEvent {
+  id                String   @id @default(cuid())
+  clientId          String?
+  accessCodeId      String?
+  status            String
+  errorType         String?
+  originalFileName  String?
+  outputCsvFileName String?
+  outputJsonFileName String?
+  fileMimeType      String?
+  fileSizeBytes     Int?
+  estimatedDocumentType String?
+  extractionKind    String?
+  records           Int?
+  fields            Int?
+  durationMs        Int?
+  modelLabel        String   @default("Motor ADALO")
+  createdAt         DateTime @default(now())
+
+  client     Client?     @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  accessCode AccessCode? @relation(fields: [accessCodeId], references: [id], onDelete: SetNull)
+
+  @@index([clientId, createdAt])
+  @@index([accessCodeId, createdAt])
+  @@map("usage_events")
+}
+
+model AdminUser {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  role      String   @default("admin")
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("admin_users")
+}

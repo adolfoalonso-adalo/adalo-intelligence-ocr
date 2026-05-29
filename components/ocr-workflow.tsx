@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { CsvResultsPreview } from "@/components/csv-results-preview";
 import { DownloadCsvButton } from "@/components/download-csv-button";
+import { DownloadJsonButton } from "@/components/download-json-button";
 import { PdfDropzone } from "@/components/pdf-dropzone";
 import { ProcessingStatus } from "@/components/processing-status";
 import { Spinner } from "@/components/spinner";
@@ -21,6 +22,9 @@ type ProcessResponse = {
   success: boolean;
   csvContent?: string;
   fileName?: string;
+  jsonContent?: string;
+  jsonFileName?: string;
+  allowJsonExport?: boolean;
   extractedRows?: number;
   modelUsed?: string;
   resultQuality?: ResultQuality;
@@ -39,6 +43,9 @@ export function OcrWorkflow() {
   const [result, setResult] = useState<{
     csvContent: string;
     fileName: string;
+    jsonContent?: string;
+    jsonFileName?: string;
+    allowJsonExport?: boolean;
     extractedRows: number;
     resultQuality?: ResultQuality;
     durationMs?: number;
@@ -110,6 +117,9 @@ export function OcrWorkflow() {
       setResult({
         csvContent: data.csvContent,
         fileName: data.fileName,
+        jsonContent: data.jsonContent,
+        jsonFileName: data.jsonFileName,
+        allowJsonExport: data.allowJsonExport,
         extractedRows: data.extractedRows ?? 0,
         resultQuality: data.resultQuality,
         durationMs: data.durationMs,
@@ -202,6 +212,12 @@ export function OcrWorkflow() {
         {result && status === "done" ? (
           <>
             <DownloadCsvButton csvContent={result.csvContent} fileName={result.fileName} />
+            {result.allowJsonExport !== false && result.jsonContent && result.jsonFileName ? (
+              <DownloadJsonButton
+                fileName={result.jsonFileName}
+                jsonContent={result.jsonContent}
+              />
+            ) : null}
             <button
               type="button"
               onClick={reset}
