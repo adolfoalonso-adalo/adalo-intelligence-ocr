@@ -1,28 +1,41 @@
+import { del, get, head } from "@vercel/blob";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { getAccessCookieName, verifyAccessCookie } from "@/lib/access-code";
 import {
   getAccessSessionCookieName,
   verifyAccessSessionCookie,
+  type AccessSessionPayload,
 } from "@/lib/access-session";
 import { auth } from "@/lib/auth";
 import {
+  getClientProfileCode,
+  getClientProfileById,
   getClientProfileCookieName,
+  isVisionTableProfile,
   resolveDocumentTypeForProfile,
   verifyClientProfileCookie,
   type ClientProfile,
 } from "@/lib/client-profiles";
 import { createCsvFileName, type CsvFileKind } from "@/lib/csv";
 import { parseCsvPreview } from "@/lib/csv-preview";
-import { normalizeDocumentType, type DocumentType } from "@/lib/document-type";
+import { detectDocumentTypeFromFileMetadata } from "@/lib/document-detection";
+import type { DocumentType } from "@/lib/document-type";
 import { createExtractionMetadata } from "@/lib/extraction-metadata";
 import {
-  analyzeFileToCsv,
   CsvAnalysisError,
   GoogleAiTemporaryError,
   StructuredOutputError,
 } from "@/lib/google-ai";
 import { prepareImageForOcr } from "@/lib/image-optimization";
+import {
+  getOcrBlobUploadPrefix,
+  isAllowedOcrBlobContentType,
+  isOwnedOcrBlobPathname,
+  normalizeOcrBlobContentType,
+} from "@/lib/ocr-blob";
+import { runOcrExtraction } from "@/lib/ocr-orchestrator";
+import type { OCRQualityStatus } from "@/lib/ocr-quality";
 import {
   createLocalPdfTextFallbackFromBuffer,
   createLocalPdfTextFallbackResult,
@@ -38,8 +51,6 @@ import {
 import {
   getMaxSizeMbForMimeType,
   getFileSizeLimitMessage,
-  getSupportedMimeType,
-  isAllowedOcrFile,
 } from "@/lib/validations";
 import {
   getOcrUsageContext,
@@ -59,6 +70,14 @@ export async function POST(request: Request) {
   let originalMimeType = "";
   let originalFileSize = 0;
   let estimatedDocumentType: DocumentType = "auto";
+  let accessSessionForUsage: AccessSessionPayload | null = null;
+  let blobPathnameToDelete = "";
+
+  console.info("OCR_PROCESS_ROUTE_REACHED", {
+    method: request.method,
+    pathname: new URL(request.url).pathname,
+    contentType: request.headers.get("content-type"),
+  });
 
   try {
     console.info("[OCR API] env flags", {
@@ -99,7 +118,8 @@ export async function POST(request: Request) {
     const accessSession = verifyAccessSessionCookie(
       cookieStore.get(getAccessSessionCookieName())?.value,
     );
-    const clientProfile = verifyClientProfileCookie(
+    accessSessionForUsage = accessSession;
+    let clientProfile = verifyClientProfileCookie(
       cookieStore.get(getClientProfileCookieName())?.value,
     );
 
@@ -121,6 +141,7 @@ export async function POST(request: Request) {
         context: usageCheck.context,
         durationMs: Date.now() - startedAt,
         errorType: "usage_limit_reached",
+        isInternalTest: accessSession?.isInternalTest,
         status: "error",
       });
 
@@ -138,27 +159,34 @@ export async function POST(request: Request) {
 
     const contentType = request.headers.get("content-type") || "";
 
-    if (!contentType.toLowerCase().includes("multipart/form-data")) {
+    if (!contentType.toLowerCase().includes("application/json")) {
       return jsonResponse(
-        { success: false, error: "La solicitud debe enviar un archivo mediante formulario." },
+        {
+          success: false,
+          error: "La solicitud debe enviar una referencia segura de Vercel Blob.",
+        },
         400,
         rateLimit,
       );
     }
 
-    const formData = await request.formData();
-    const file = formData.get("file");
-    const detectedDocumentType = normalizeDocumentType(formData.get("documentType"));
+    const payload = await readBlobProcessRequest(request);
+    const detectedDocumentType = detectDocumentTypeFromFileMetadata({
+      fileName: payload.originalFileName,
+      mimeType: payload.mimeType,
+    }).detectedType;
+    const testProfileId = normalizeTestProfileId(payload.profile);
 
-    if (!(file instanceof File)) {
-      return jsonResponse(
-        { success: false, error: "No se recibió ningún archivo." },
-        400,
-        rateLimit,
-      );
+    if (accessSession?.allowProfileTesting && testProfileId) {
+      clientProfile = getClientProfileById(testProfileId);
+      console.info("[OCR API] master test profile selected", {
+        profileId: clientProfile.id,
+        profileCode: getClientProfileCode(clientProfile),
+        accessMode: accessSession.accessMode,
+      });
     }
 
-    if (file.size === 0) {
+    if (payload.size <= 0) {
       return jsonResponse(
         { success: false, error: "El archivo está vacío. Seleccioná otro archivo." },
         400,
@@ -166,7 +194,9 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!isAllowedOcrFile(file)) {
+    const requestedMimeType = normalizeOcrBlobContentType(payload.mimeType);
+
+    if (!isAllowedOcrBlobContentType(requestedMimeType)) {
       return jsonResponse(
         { success: false, error: "Subí un archivo PDF, JPG o PNG para continuar." },
         400,
@@ -174,30 +204,110 @@ export async function POST(request: Request) {
       );
     }
 
+    const expectedBlobPrefix = getOcrBlobUploadPrefix(
+      session.user.email ?? "",
+      accessSession,
+    );
+
+    if (!isOwnedOcrBlobPathname(payload.pathname, expectedBlobPrefix)) {
+      return jsonResponse(
+        {
+          success: false,
+          error: "La referencia del archivo no es válida para esta sesión.",
+        },
+        403,
+        rateLimit,
+      );
+    }
+
+    console.info("OCR_RECEIVED_BLOB_REFERENCE", {
+      pathname: payload.pathname,
+      originalFileName: sanitizeOriginalFileName(payload.originalFileName),
+      mimeType: requestedMimeType,
+      size: payload.size,
+    });
+
+    blobPathnameToDelete = payload.pathname;
+    const blobMetadata = await head(payload.pathname);
+
+    if (
+      blobMetadata.pathname !== payload.pathname ||
+      blobMetadata.url !== payload.blobUrl ||
+      !isOwnedOcrBlobPathname(blobMetadata.pathname, expectedBlobPrefix) ||
+      blobMetadata.size !== payload.size
+    ) {
+      return jsonResponse(
+        { success: false, error: "La referencia del archivo no pudo validarse." },
+        400,
+        rateLimit,
+      );
+    }
+
+    const blobMimeType = normalizeOcrBlobContentType(blobMetadata.contentType);
+
+    if (
+      !isAllowedOcrBlobContentType(blobMimeType) ||
+      blobMimeType !== requestedMimeType
+    ) {
+      return jsonResponse(
+        {
+          success: false,
+          error: "El tipo del archivo cargado no coincide con la solicitud.",
+        },
+        400,
+        rateLimit,
+      );
+    }
+
+    originalFileName = sanitizeOriginalFileName(payload.originalFileName);
+    originalMimeType = blobMimeType;
+    originalFileSize = blobMetadata.size;
+
     logApiTiming("validation", startedAt, {
-      fileName: file.name,
+      fileName: originalFileName,
       strategy: "request-validation",
     });
 
-    let fileBuffer: Buffer = Buffer.from(await file.arrayBuffer());
-    let mimeType = getSupportedMimeType(file);
-    originalFileName = file.name;
-    originalMimeType = mimeType;
-    originalFileSize = file.size;
+    console.info("BLOB_DOWNLOAD_STARTED", {
+      pathname: payload.pathname,
+      size: blobMetadata.size,
+    });
+
+    const blobResult = await get(payload.pathname, {
+      access: "private",
+      useCache: false,
+    });
+
+    if (!blobResult || blobResult.statusCode !== 200 || !blobResult.stream) {
+      throw new CsvAnalysisError(
+        "No pudimos recuperar el archivo cargado.",
+        "BLOB_DOWNLOAD_FAILED",
+      );
+    }
+
+    let fileBuffer: Buffer = Buffer.from(
+      await new Response(blobResult.stream).arrayBuffer(),
+    );
+    console.info("BLOB_DOWNLOAD_COMPLETED", {
+      pathname: payload.pathname,
+      downloadedBytes: fileBuffer.byteLength,
+    });
+    let mimeType = blobMimeType;
     const documentType = resolveDocumentTypeForProfile(detectedDocumentType, clientProfile);
     estimatedDocumentType = documentType;
     const globalSizeLimitMb = getMaxSizeMbForMimeType(mimeType);
     const effectiveSizeLimitMb = getPlanAwareMaxSizeMb(mimeType, usageContext, globalSizeLimitMb);
 
-    if (file.size > effectiveSizeLimitMb * 1024 * 1024) {
+    if (blobMetadata.size > effectiveSizeLimitMb * 1024 * 1024) {
       await recordUsageEvent({
         context: usageContext,
         durationMs: Date.now() - startedAt,
         errorType: "file_size_limit",
         estimatedDocumentType,
         fileMimeType: mimeType,
-        fileSizeBytes: file.size,
-        originalFileName: file.name,
+        fileSizeBytes: blobMetadata.size,
+        isInternalTest: accessSession?.isInternalTest,
+        originalFileName,
         status: "error",
       });
 
@@ -221,31 +331,36 @@ export async function POST(request: Request) {
         fileBuffer = optimizedImage.buffer;
         mimeType = optimizedImage.mimeType;
         logApiTiming("image-optimization", optimizationStartedAt, {
-          fileName: file.name,
+          fileName: originalFileName,
           strategy: "image-optimization",
         });
       }
     }
 
     console.info("[OCR API] request received", {
-      fileName: file.name,
+      fileName: originalFileName,
       mimeType,
-      size: file.size,
+      size: blobMetadata.size,
       documentType,
       clientProfileId: clientProfile.id,
+      transport: "vercel-blob",
     });
 
-    if (isForceLocalPdfFallbackEnabled() && mimeType === "application/pdf") {
+    if (
+      isForceLocalPdfFallbackEnabled() &&
+      mimeType === "application/pdf" &&
+      !isVisionTableProfile(clientProfile)
+    ) {
       console.info("[OCR API] FORCE_LOCAL_PDF_FALLBACK enabled", {
-        fileName: file.name,
+        fileName: originalFileName,
         mimeType,
-        size: file.size,
+        size: blobMetadata.size,
       });
 
       const extractionStartedAt = Date.now();
       const extraction = await extractPdfTextByPages(fileBuffer);
       logApiTiming("pdf-text-extraction", extractionStartedAt, {
-        fileName: file.name,
+        fileName: originalFileName,
         strategy: "local-fallback",
       });
 
@@ -268,11 +383,11 @@ export async function POST(request: Request) {
       const fallbackStartedAt = Date.now();
       const fallback = createLocalPdfTextFallbackResult({
         pages: extraction.pages,
-        originalFileName: file.name,
+        originalFileName,
         totalTextLength: extraction.totalTextLength,
       });
       logApiTiming("fallback-local", fallbackStartedAt, {
-        fileName: file.name,
+        fileName: originalFileName,
         strategy: "local-fallback",
       });
 
@@ -302,60 +417,68 @@ export async function POST(request: Request) {
         },
         startedAt,
         rateLimit,
-        file.name,
+        originalFileName,
         "local-fallback",
         {
           clientProfile,
           documentType,
+          accessSession,
           usageContext,
-          sourceFileSize: file.size,
+          sourceFileSize: blobMetadata.size,
           sourceMimeType: mimeType,
         },
       );
     }
 
     try {
-      console.info("[OCR API] calling analyzeFileToCsv");
+      console.info("[OCR API] calling OCR orchestrator");
       const analysisStartedAt = Date.now();
-      const analysis = await analyzeFileToCsv(
-        fileBuffer,
-        file.name,
-        mimeType,
-        documentType,
+      const analysis = await runOcrExtraction({
         clientProfile,
-      );
+        documentType,
+        fileBuffer,
+        fileName: originalFileName,
+        mimeType,
+      });
       logApiTiming(
         mimeType === "application/pdf" ? "direct-file-analysis" : "direct-file-analysis",
         analysisStartedAt,
         {
-          fileName: file.name,
+          fileName: originalFileName,
           model: analysis.modelUsed,
           strategy: "ocr-analysis",
         },
       );
 
-      console.info("[OCR API] analyzeFileToCsv success", {
+      console.info("[OCR API] OCR orchestrator success", {
         modelUsed: analysis.modelUsed,
+        providerUsed: analysis.providerUsed,
+        qualityStatus: analysis.qualityStatus,
+        confidence: analysis.confidence,
         extractedRows: analysis.extractedRows,
         csvLength: analysis.csvContent?.length ?? 0,
       });
 
-      return successResponse(analysis, startedAt, rateLimit, file.name, "ocr-analysis", {
+      return successResponse(analysis, startedAt, rateLimit, originalFileName, "ocr-analysis", {
         clientProfile,
         documentType,
+        accessSession,
         usageContext,
-        sourceFileSize: file.size,
+        sourceFileSize: blobMetadata.size,
         sourceMimeType: mimeType,
       });
     } catch (analysisError) {
-      console.warn("[OCR API] analyzeFileToCsv failed", getSafeErrorLog(analysisError));
+      console.warn("[OCR API] OCR orchestrator failed", getSafeErrorLog(analysisError));
 
-      if (mimeType === "application/pdf") {
+      if (mimeType === "application/pdf" && !isVisionTableProfile(clientProfile)) {
         try {
           const fallbackStartedAt = Date.now();
-          const fallback = await createLocalPdfTextFallbackFromBuffer(fileBuffer, file.name);
+          const fallback = await createLocalPdfTextFallbackFromBuffer(
+            fileBuffer,
+            originalFileName,
+          );
           logApiTiming("fallback-local", fallbackStartedAt, {
-            fileName: file.name,
+            fileName: originalFileName,
             strategy: "local-fallback",
           });
 
@@ -378,20 +501,21 @@ export async function POST(request: Request) {
               },
               startedAt,
               rateLimit,
-              file.name,
+              originalFileName,
               "local-fallback",
               {
                 clientProfile,
                 documentType,
+                accessSession,
                 usageContext,
-                sourceFileSize: file.size,
+                sourceFileSize: blobMetadata.size,
                 sourceMimeType: mimeType,
               },
             );
           }
 
           console.warn("[OCR API] endpoint local fallback unavailable", {
-            fileName: file.name,
+            fileName: originalFileName,
             mimeType,
           });
         } catch (fallbackError) {
@@ -420,6 +544,7 @@ export async function POST(request: Request) {
       estimatedDocumentType,
       fileMimeType: originalMimeType,
       fileSizeBytes: originalFileSize,
+      isInternalTest: accessSessionForUsage?.isInternalTest,
       originalFileName,
       status: "error",
     });
@@ -434,12 +559,89 @@ export async function POST(request: Request) {
     }
 
     return NextResponse.json(body, { status: 500 });
+  } finally {
+    if (blobPathnameToDelete) {
+      try {
+        await del(blobPathnameToDelete);
+        console.info("[OCR API] temporary blob deleted", {
+          pathname: blobPathnameToDelete,
+        });
+      } catch (cleanupError) {
+        console.warn("[OCR API] temporary blob cleanup failed", {
+          pathname: blobPathnameToDelete,
+          errorName:
+            cleanupError instanceof Error
+              ? cleanupError.name
+              : typeof cleanupError,
+        });
+      }
+    }
   }
+}
+
+type BlobProcessRequest = {
+  blobUrl: string;
+  pathname: string;
+  originalFileName: string;
+  mimeType: string;
+  size: number;
+  profile?: string;
+};
+
+async function readBlobProcessRequest(request: Request): Promise<BlobProcessRequest> {
+  let body: Partial<BlobProcessRequest>;
+
+  try {
+    body = (await request.json()) as Partial<BlobProcessRequest>;
+  } catch {
+    throw new CsvAnalysisError(
+      "La referencia del archivo no es valida.",
+      "BLOB_PROCESS_REQUEST_INVALID_JSON",
+    );
+  }
+
+  if (
+    typeof body.blobUrl !== "string" ||
+    typeof body.pathname !== "string" ||
+    typeof body.originalFileName !== "string" ||
+    typeof body.mimeType !== "string" ||
+    typeof body.size !== "number" ||
+    !Number.isFinite(body.size)
+  ) {
+    throw new CsvAnalysisError(
+      "La referencia del archivo esta incompleta.",
+      "BLOB_PROCESS_REQUEST_INVALID",
+    );
+  }
+
+  return {
+    blobUrl: body.blobUrl.trim(),
+    pathname: body.pathname.trim(),
+    originalFileName: body.originalFileName,
+    mimeType: body.mimeType,
+    size: body.size,
+    profile: body.profile,
+  };
+}
+
+function sanitizeOriginalFileName(value: string) {
+  const withoutControlCharacters = [...value]
+    .filter((character) => {
+      const code = character.charCodeAt(0);
+      return code > 31 && code !== 127;
+    })
+    .join("");
+  const sanitized = withoutControlCharacters
+    .replace(/[\\/]+/g, "-")
+    .trim()
+    .slice(0, 180);
+
+  return sanitized || "documento";
 }
 
 const methodNotAllowed = () =>
   NextResponse.json(
-    { success: false, error: "Método no permitido. Usá POST para procesar documentos." },
+    { success: false, error: "Método no permitido. Usá POST." },
     { status: 405, headers: { Allow: "POST" } },
   );
 
@@ -455,8 +657,20 @@ async function successResponse(
     csvContent: string;
     fileName: string;
     extractedRows: number;
+    jsonColumns?: string[];
+    jsonRows?: Record<string, string>[];
     modelUsed: string;
+    profileValidationWarnings?: string[];
     resultQuality?: "ai" | "partial" | "local-fallback";
+    extractionMode?: string;
+    primaryProvider?: string;
+    fallbackProvider?: string;
+    providerUsed?: string;
+    confidence?: number;
+    qualityStatus?: OCRQualityStatus;
+    warnings?: string[];
+    pagesProcessed?: number;
+    rowsExtracted?: number;
   },
   startedAt: number,
   rateLimit: RateLimitResult,
@@ -465,6 +679,7 @@ async function successResponse(
   context: {
     clientProfile?: ClientProfile;
     documentType?: DocumentType;
+    accessSession?: AccessSessionPayload | null;
     sourceFileSize?: number;
     sourceMimeType?: string;
     usageContext?: OcrPlanContext | null;
@@ -479,17 +694,33 @@ async function successResponse(
   const rows = parsedCsv.rows.map((row) =>
     Object.fromEntries(columns.map((column, index) => [column, row[index] ?? ""])),
   );
+  const jsonColumns = result.jsonColumns ?? columns;
+  const jsonRows = result.jsonRows ?? rows;
   const metadata = createExtractionMetadata({
     clientProfileId: context.clientProfile?.id,
+    accessMode: context.accessSession?.accessMode === "master" ? "master" : "client",
+    isInternalTest: context.accessSession?.isInternalTest === true,
     durationMs,
+    documentType: context.clientProfile?.documentType,
     extractionKind,
+    extractionMode: result.extractionMode ?? context.clientProfile?.extractionMode,
     fields: columns.length,
     originalFileName: sourceFileName ?? "",
     outputFileName: fileName,
     outputJsonFileName: jsonFileName,
+    profileCode: getClientProfileCode(context.clientProfile),
+    profileName: context.clientProfile?.label,
     records: rows.length,
+    primaryProvider: result.primaryProvider,
+    fallbackProvider: result.fallbackProvider,
+    providerUsed: result.providerUsed,
+    confidence: result.confidence,
+    qualityStatus: result.qualityStatus,
+    pagesProcessed: result.pagesProcessed,
+    rowsExtracted: result.rowsExtracted ?? result.extractedRows,
+    warnings: [...(result.profileValidationWarnings ?? []), ...(result.warnings ?? [])],
   });
-  const jsonContent = JSON.stringify({ metadata, columns, rows }, null, 2);
+  const jsonContent = JSON.stringify({ metadata, columns: jsonColumns, rows: jsonRows }, null, 2);
   const allowJsonExport = context.usageContext?.plan.allowJsonExport ?? true;
   logApiTiming("total", startedAt, {
     fileName: sourceFileName,
@@ -509,6 +740,7 @@ async function successResponse(
     outputCsvFileName: fileName,
     outputJsonFileName: allowJsonExport ? jsonFileName : undefined,
     records: rows.length,
+    isInternalTest: context.accessSession?.isInternalTest,
     status: "success",
   });
 
@@ -522,7 +754,15 @@ async function successResponse(
       allowJsonExport,
       extractedRows: result.extractedRows,
       modelUsed: result.modelUsed,
+      profileCode: getClientProfileCode(context.clientProfile),
+      profileName: context.clientProfile?.label,
+      extractionMode: result.extractionMode ?? context.clientProfile?.extractionMode,
+      extractionType: context.clientProfile?.userFacingExtractionType,
       resultQuality: result.resultQuality,
+      providerUsed: result.providerUsed,
+      qualityStatus: result.qualityStatus,
+      confidence: result.confidence,
+      warnings: result.warnings,
       durationMs,
     },
     200,
@@ -543,6 +783,10 @@ function resolveCsvFileKind(
   } = {},
 ): CsvFileKind {
   const modelUsed = result.modelUsed.toLowerCase();
+
+  if (context.clientProfile?.id === "movimiento" || context.clientProfile?.extractionMode === "vision_table") {
+    return "MOVIMIENTO";
+  }
 
   if (result.resultQuality === "local-fallback" || modelUsed.includes("local pdf text fallback")) {
     return "EXTRACCION_BASICA";
@@ -659,6 +903,15 @@ function getPlanFileSizeLimitMessage(mimeType: string, limitMb: number) {
   return `Archivo excede el tamaño máximo. Tu plan permite archivos de hasta ${limitMb} MB.`;
 }
 
+function normalizeTestProfileId(value: unknown) {
+  if (typeof value !== "string") return "";
+
+  const normalized = value.trim().replace(/^['"]|['"]$/g, "").toLowerCase();
+  const allowed = new Set(["general", "mateo", "movimiento", "technical-admin"]);
+
+  return allowed.has(normalized) ? normalized : "";
+}
+
 function isForceLocalPdfFallbackEnabled() {
   const value = process.env.FORCE_LOCAL_PDF_FALLBACK ?? "";
   return value.trim().replace(/^['"]|['"]$/g, "").toLowerCase() === "true";
@@ -699,6 +952,14 @@ function isTimeoutError(error: unknown) {
 }
 
 function toSafeUserError(error: unknown) {
+  if (isProfileExtractionValidationError(error)) {
+    return {
+      message:
+        "No se pudo estructurar la tabla logistica. El documento fue leido parcialmente, pero no se detecto una tabla valida para el perfil Movimiento. Proba con una imagen mas clara o solicita revision manual.",
+      technicalDetail: "failed_quality_gate_movimiento",
+    };
+  }
+
   if (isAiQuotaOrSaturationError(error)) {
     return {
       message:
@@ -715,6 +976,14 @@ function toSafeUserError(error: unknown) {
   }
 
   if (isAiOutputQualityLowError(error)) {
+    return {
+      message:
+        "No pudimos estructurar el archivo. El documento fue leido parcialmente, pero no se obtuvo una tabla confiable. Proba con una imagen mas nitida o mas centrada.",
+      technicalDetail: "La salida del motor no alcanzo el umbral minimo de calidad.",
+    };
+  }
+
+  if (isOcrQualityGateError(error)) {
     return {
       message:
         "No pudimos estructurar el archivo. El documento fue leido parcialmente, pero no se obtuvo una tabla confiable. Proba con una imagen mas nitida o mas centrada.",
@@ -751,6 +1020,13 @@ function toSafeUserError(error: unknown) {
     };
   }
 
+  if (isDocumentAiError(error)) {
+    return {
+      message: "No pudimos procesar el documento con OCR avanzado",
+      technicalDetail: "Google Document AI processing failed",
+    };
+  }
+
   if (error instanceof CsvAnalysisError) {
     return {
       message: error.message,
@@ -764,6 +1040,33 @@ function toSafeUserError(error: unknown) {
   };
 }
 
+function isDocumentAiError(error: unknown) {
+  const detail =
+    error instanceof CsvAnalysisError
+      ? `${error.message} ${error.technicalDetail}`
+      : error instanceof Error
+        ? `${error.name} ${error.message}`
+        : String(error ?? "");
+  const normalized = detail.toLowerCase();
+
+  return (
+    normalized.includes("google document ai") ||
+    normalized.includes("google_document_ai") ||
+    normalized.includes("advanced_ocr_normalization")
+  );
+}
+
+function isProfileExtractionValidationError(error: unknown) {
+  const detail = error instanceof Error ? `${error.name} ${error.message}` : String(error ?? "");
+  const normalized = detail.toLowerCase();
+
+  return (
+    normalized.includes("profileextractionvalidationerror") ||
+    normalized.includes("profile_extraction_validation_error") ||
+    normalized.includes("profile_rejected_generic_line_csv")
+  );
+}
+
 function isAiOutputQualityLowError(error: unknown) {
   const detail = error instanceof Error ? `${error.name} ${error.message}` : String(error ?? "");
   const normalized = detail.toLowerCase();
@@ -772,6 +1075,17 @@ function isAiOutputQualityLowError(error: unknown) {
     normalized.includes("aioutputqualityerror") ||
     normalized.includes("ai result quality was too low") ||
     normalized.includes("ai_output_quality_low")
+  );
+}
+
+function isOcrQualityGateError(error: unknown) {
+  const detail = error instanceof Error ? `${error.name} ${error.message}` : String(error ?? "");
+  const normalized = detail.toLowerCase();
+
+  return (
+    normalized.includes("ocr_quality_gate_failed") ||
+    normalized.includes("ocr_fallback_quality_gate_failed") ||
+    normalized.includes("quality gate")
   );
 }
 

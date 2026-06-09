@@ -18,8 +18,8 @@ export function getMaxFileSizeMb() {
 }
 
 export function getMaxImageSizeMb() {
-  const parsed = Number(process.env.MAX_IMAGE_SIZE_MB || "20");
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 20;
+  const parsed = Number(process.env.MAX_IMAGE_SIZE_MB || "50");
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 50;
 }
 
 export function getMaxPdfSizeBytes() {

@@ -4,7 +4,12 @@ import { AdaloLogo } from "@/components/adalo-logo";
 import { OcrWorkflow } from "@/components/ocr-workflow";
 import { UserMenu } from "@/components/user-menu";
 import { getAccessCookieName, verifyAccessCookie } from "@/lib/access-code";
+import {
+  getAccessSessionCookieName,
+  verifyAccessSessionCookie,
+} from "@/lib/access-session";
 import { auth } from "@/lib/auth";
+import { getOcrBlobUploadPrefix } from "@/lib/ocr-blob";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +22,13 @@ export default async function AppPage() {
 
   const cookieStore = await cookies();
   const hasAccess = verifyAccessCookie(cookieStore.get(getAccessCookieName())?.value);
+  const accessSession = verifyAccessSessionCookie(
+    cookieStore.get(getAccessSessionCookieName())?.value,
+  );
+  const uploadPrefix = getOcrBlobUploadPrefix(
+    session.user.email ?? "",
+    accessSession,
+  );
 
   if (!hasAccess) {
     redirect("/access");
@@ -45,7 +57,11 @@ export default async function AppPage() {
           </div>
 
           <div className="mx-auto mt-10 max-w-3xl">
-            <OcrWorkflow />
+            <OcrWorkflow
+              accessMode={accessSession?.accessMode}
+              allowProfileTesting={accessSession?.allowProfileTesting}
+              uploadPrefix={uploadPrefix}
+            />
           </div>
         </div>
       </section>

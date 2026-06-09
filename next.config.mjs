@@ -2,7 +2,7 @@
 const nextConfig = {
   outputFileTracingRoot: process.cwd(),
   poweredByHeader: false,
-  serverExternalPackages: ["pdf-parse", "sharp"],
+  serverExternalPackages: ["@google-cloud/documentai", "pdf-parse", "sharp"],
 };
 
 export default nextConfig;

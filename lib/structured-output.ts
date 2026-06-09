@@ -300,10 +300,13 @@ export function assessExtractionQuality(
   const hasStructuredDocumentColumns =
     structuredDocumentColumns.filter((column) => uniqueColumns.has(column)).length >= 6;
   const commercialColumnCount = countCommercialOperationsColumns(normalizedColumns);
+  const logisticsMovementColumnCount = countLogisticsMovementColumns(normalizedColumns);
   const isCommercialContext =
     context.documentType === "invoice" ||
     context.extractionProfile === "commercial-operations" ||
     context.clientProfileId === "mateo";
+  const isVisionTableContext =
+    context.extractionProfile === "vision-table" || context.clientProfileId === "movimiento";
 
   if (isLocalTextFallback) {
     return {
@@ -335,7 +338,14 @@ export function assessExtractionQuality(
     }
   }
 
-  if (context.documentType === "table" && nonEmptyRows.length < 3) {
+  if (isVisionTableContext && nonEmptyRows.length >= 1 && logisticsMovementColumnCount >= 8) {
+    return {
+      quality: "high",
+      reason: "Logistics movement table profile with expected schema",
+    };
+  }
+
+  if (context.documentType === "table" && !isVisionTableContext && nonEmptyRows.length < 3) {
     return {
       quality: "low",
       reason: "Table/list extraction requires multiple rows",
@@ -781,6 +791,54 @@ function countCommercialOperationsColumns(normalizedColumns: string[]) {
 
     if (compactColumn.includes("peso")) {
       matches.add("peso");
+    }
+  }
+
+  return matches.size;
+}
+
+function countLogisticsMovementColumns(normalizedColumns: string[]) {
+  const required = new Set([
+    "fechasalida",
+    "cantidadcamion",
+    "unidad",
+    "tons",
+    "proveedor",
+    "producto",
+    "origen",
+    "rutacaminospuna",
+    "destino",
+    "fechaarribo",
+    "cantidadescoltas",
+  ]);
+  const matches = new Set<string>();
+
+  for (const column of normalizedColumns) {
+    const compactColumn = normalizeCommercialColumnKey(column);
+
+    if (required.has(compactColumn)) {
+      matches.add(compactColumn);
+      continue;
+    }
+
+    if (compactColumn.includes("fecha") && compactColumn.includes("salida")) {
+      matches.add("fechasalida");
+    }
+
+    if (compactColumn.includes("fecha") && compactColumn.includes("arribo")) {
+      matches.add("fechaarribo");
+    }
+
+    if (compactColumn.includes("camion")) {
+      matches.add("cantidadcamion");
+    }
+
+    if (compactColumn.includes("escolta")) {
+      matches.add("cantidadescoltas");
+    }
+
+    if (compactColumn.includes("ruta") && compactColumn.includes("puna")) {
+      matches.add("rutacaminospuna");
     }
   }
 

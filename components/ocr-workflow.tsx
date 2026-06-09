@@ -1,5 +1,6 @@
 "use client";
 
+import { upload } from "@vercel/blob/client";
 import { useState } from "react";
 import { CsvResultsPreview } from "@/components/csv-results-preview";
 import { DownloadCsvButton } from "@/components/download-csv-button";
@@ -7,14 +8,17 @@ import { DownloadJsonButton } from "@/components/download-json-button";
 import { PdfDropzone } from "@/components/pdf-dropzone";
 import { ProcessingStatus } from "@/components/processing-status";
 import { Spinner } from "@/components/spinner";
-import {
-  detectDocumentTypeFromFileMetadata,
-  type DocumentDetectionResult,
-} from "@/lib/document-detection";
 import { parseCsvPreview } from "@/lib/csv-preview";
 import { getSupportedMimeType } from "@/lib/validations";
 
-export type OcrStatus = "idle" | "validating" | "ready" | "processing" | "done" | "error";
+export type OcrStatus =
+  | "idle"
+  | "validating"
+  | "ready"
+  | "uploading"
+  | "processing"
+  | "done"
+  | "error";
 
 type ResultQuality = "ai" | "partial" | "local-fallback";
 
@@ -27,19 +31,33 @@ type ProcessResponse = {
   allowJsonExport?: boolean;
   extractedRows?: number;
   modelUsed?: string;
+  profileCode?: string;
+  profileName?: string;
+  extractionMode?: string;
+  extractionType?: string;
   resultQuality?: ResultQuality;
   durationMs?: number;
   error?: string;
   technicalDetail?: string;
 };
 
-export function OcrWorkflow() {
+type TestProfileId = "general" | "mateo" | "movimiento" | "technical-admin";
+
+export function OcrWorkflow({
+  accessMode,
+  allowProfileTesting = false,
+  uploadPrefix,
+}: {
+  accessMode?: "client" | "legacy" | "master";
+  allowProfileTesting?: boolean;
+  uploadPrefix: string;
+}) {
   const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<OcrStatus>("idle");
   const [error, setError] = useState<string>("");
   const [technicalDetail, setTechnicalDetail] = useState<string>("");
-  const [detectedDocumentType, setDetectedDocumentType] =
-    useState<DocumentDetectionResult | null>(null);
+  const [testProfileId, setTestProfileId] = useState<TestProfileId>("general");
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [result, setResult] = useState<{
     csvContent: string;
     fileName: string;
@@ -47,6 +65,10 @@ export function OcrWorkflow() {
     jsonFileName?: string;
     allowJsonExport?: boolean;
     extractedRows: number;
+    profileCode?: string;
+    profileName?: string;
+    extractionMode?: string;
+    extractionType?: string;
     resultQuality?: ResultQuality;
     durationMs?: number;
   } | null>(null);
@@ -57,15 +79,10 @@ export function OcrWorkflow() {
     setResult(null);
     setError("");
     setTechnicalDetail("");
+    setUploadProgress(0);
     setStatus("validating");
 
     window.setTimeout(() => {
-      const detection = detectDocumentTypeFromFileMetadata({
-        fileName: selectedFile.name,
-        mimeType: getSupportedMimeType(selectedFile),
-      });
-
-      setDetectedDocumentType(detection);
       setFile(selectedFile);
       setStatus("ready");
     }, 350);
@@ -74,7 +91,6 @@ export function OcrWorkflow() {
   function handleInvalidFile(message: string) {
     setFile(null);
     setResult(null);
-    setDetectedDocumentType(null);
     setError(message);
     setTechnicalDetail("");
     setStatus("error");
@@ -83,30 +99,87 @@ export function OcrWorkflow() {
   function reset() {
     setFile(null);
     setResult(null);
-    setDetectedDocumentType(null);
     setError("");
     setTechnicalDetail("");
+    setUploadProgress(0);
     setStatus("idle");
   }
 
   async function processDocument() {
     if (!file || status !== "ready") return;
 
-    setStatus("processing");
+    setStatus("uploading");
     setError("");
     setTechnicalDetail("");
     setResult(null);
-
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("documentType", detectedDocumentType?.detectedType ?? "auto");
+    setUploadProgress(0);
 
     try {
+      const mimeType = getSupportedMimeType(file);
+      const pathname = `${uploadPrefix}${Date.now()}-${sanitizeBlobFileName(file.name)}`;
+      console.info("upload:start", {
+        endpoint: "/api/upload",
+        method: "POST",
+        fileName: file.name,
+        mimeType,
+        size: file.size,
+      });
+      const blob = await upload(pathname, file, {
+        access: "private",
+        contentType: mimeType,
+        handleUploadUrl: "/api/upload",
+        multipart: true,
+        clientPayload: JSON.stringify({
+          mimeType,
+          originalFileName: file.name,
+          size: file.size,
+        }),
+        onUploadProgress: ({ percentage }) => {
+          setUploadProgress(Math.round(percentage));
+        },
+      });
+
+      console.info("upload:complete", {
+        endpoint: "/api/upload",
+        method: "POST",
+        pathname: blob.pathname,
+      });
+      setUploadProgress(100);
+      setStatus("processing");
+
+      console.info("ocr:start", {
+        endpoint: "/api/ocr/process",
+        method: "POST",
+        pathname: blob.pathname,
+      });
       const response = await fetch("/api/ocr/process", {
         method: "POST",
-        body: formData,
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          blobUrl: blob.url,
+          pathname: blob.pathname,
+          originalFileName: file.name,
+          mimeType,
+          size: file.size,
+          profile:
+            allowProfileTesting && accessMode === "master"
+              ? testProfileId
+              : undefined,
+        }),
       });
-      const data = await readProcessResponse(response);
+      console.info("ocr:complete", {
+        endpoint: "/api/ocr/process",
+        method: "POST",
+        status: response.status,
+        success: response.ok,
+      });
+      const data = await readProcessResponse(
+        response,
+        "POST",
+        "/api/ocr/process",
+      );
 
       if (!response.ok || !data.success || !data.csvContent || !data.fileName) {
         const processingError = new Error(data.error || "No pudimos procesar el archivo");
@@ -121,6 +194,10 @@ export function OcrWorkflow() {
         jsonFileName: data.jsonFileName,
         allowJsonExport: data.allowJsonExport,
         extractedRows: data.extractedRows ?? 0,
+        profileCode: data.profileCode,
+        profileName: data.profileName,
+        extractionMode: data.extractionMode,
+        extractionType: data.extractionType,
         resultQuality: data.resultQuality,
         durationMs: data.durationMs,
       });
@@ -141,11 +218,36 @@ export function OcrWorkflow() {
     <div className="space-y-5">
       <PdfDropzone
         file={file}
-        disabled={status === "processing" || status === "validating"}
+        disabled={
+          status === "processing" ||
+          status === "uploading" ||
+          status === "validating"
+        }
         isValidating={status === "validating"}
         onFileSelected={handleFileSelected}
         onInvalidFile={handleInvalidFile}
       />
+
+      {allowProfileTesting && accessMode === "master" ? (
+        <div className="rounded-2xl border border-brand-border bg-brand-card px-4 py-3 text-left shadow-sm">
+          <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-brand-accent">
+            Perfil de prueba OCR
+          </label>
+          <select
+            value={testProfileId}
+            onChange={(event) => setTestProfileId(event.target.value as TestProfileId)}
+            className="mt-2 w-full rounded-xl border border-brand-border bg-white px-3 py-2 text-sm font-semibold text-brand-deep outline-none transition focus:border-brand-accent"
+          >
+            <option value="general">Automatico / general</option>
+            <option value="mateo">Mateo / comprobantes DTVe</option>
+            <option value="movimiento">Movimiento / tablas logisticas</option>
+            <option value="technical-admin">Documento tecnico-administrativo</option>
+          </select>
+          <p className="mt-2 text-xs leading-5 text-brand-slate">
+            Visible solo con codigo maestro. Permite probar perfiles internos sin convertirlos en codigos de acceso.
+          </p>
+        </div>
+      ) : null}
 
       <div className="space-y-2 text-center text-xs leading-5 text-brand-slate">
         <p>Tus archivos se procesan de forma temporal y no se almacenan despues de la extraccion.</p>
@@ -157,8 +259,10 @@ export function OcrWorkflow() {
         details={
           status === "processing" && file
             ? file.size > 2 * 1024 * 1024
-              ? "Estamos analizando el contenido para generar una salida estructurada. Puede demorar unos minutos."
-              : "Estamos identificando la estructura del documento y preparando los datos para exportar."
+              ? "Archivo cargado, iniciando OCR. Estamos analizando el contenido para generar una salida estructurada. Puede demorar unos minutos."
+              : "Archivo cargado, iniciando OCR. Estamos identificando la estructura del documento y preparando los datos para exportar."
+            : status === "uploading"
+              ? `Subiendo archivo... ${uploadProgress}%`
             : status === "done" && result
               ? buildSuccessDetails(
                   result.extractedRows,
@@ -174,6 +278,17 @@ export function OcrWorkflow() {
         technicalDetail={status === "error" ? technicalDetail : ""}
       />
 
+      {result && status === "done" && result.profileCode && result.profileCode !== "general" ? (
+        <div className="rounded-2xl border border-brand-border bg-brand-card px-4 py-3 text-center text-xs leading-5 text-brand-slate">
+          <p className="font-semibold text-brand-deep">Perfil utilizado: {result.profileCode}</p>
+          <p>
+            Tipo de extraccion: {result.extractionType || formatExtractionMode(result.extractionMode)}
+            {" · "}
+            Salida: CSV estructurado + JSON estructurado
+          </p>
+        </div>
+      ) : null}
+
       {result && status === "done" ? <CsvResultsPreview csvContent={result.csvContent} /> : null}
 
       <div className="flex flex-col gap-3 sm:flex-row sm:justify-center">
@@ -184,7 +299,11 @@ export function OcrWorkflow() {
               const input = document.querySelector<HTMLInputElement>('input[type="file"]');
               input?.click();
             }}
-            disabled={status === "validating" || status === "processing"}
+            disabled={
+              status === "validating" ||
+              status === "uploading" ||
+              status === "processing"
+            }
             className="rounded-2xl border border-brand-border bg-brand-card px-5 py-3 text-sm font-semibold text-brand-deep transition hover:-translate-y-0.5 hover:border-brand-accent hover:text-brand-accent disabled:cursor-not-allowed disabled:opacity-60"
           >
             {file ? "Cambiar archivo" : "Seleccionar archivo"}
@@ -195,13 +314,19 @@ export function OcrWorkflow() {
           <button
             type="button"
             onClick={processDocument}
-            disabled={!file || status === "validating" || status === "error" || status === "processing"}
+            disabled={
+              !file ||
+              status === "validating" ||
+              status === "error" ||
+              status === "uploading" ||
+              status === "processing"
+            }
             className="inline-flex items-center justify-center gap-2 rounded-2xl bg-brand-deep px-5 py-3 text-sm font-semibold text-white shadow-lg shadow-brand-deep/20 transition hover:-translate-y-0.5 hover:bg-brand-petrol disabled:cursor-not-allowed disabled:opacity-70"
           >
-            {status === "processing" ? (
+            {status === "processing" || status === "uploading" ? (
               <>
                 <Spinner />
-                Procesando...
+                {status === "uploading" ? "Subiendo..." : "Procesando..."}
               </>
             ) : (
               "Procesar documento"
@@ -232,27 +357,57 @@ export function OcrWorkflow() {
   );
 }
 
-async function readProcessResponse(response: Response): Promise<ProcessResponse> {
+function sanitizeBlobFileName(value: string) {
+  const sanitized = value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-.]+|[-.]+$/g, "")
+    .slice(0, 120);
+
+  return sanitized || "documento";
+}
+
+async function readProcessResponse(
+  response: Response,
+  method: string,
+  endpoint: string,
+): Promise<ProcessResponse> {
   const contentType = response.headers.get("content-type") || "";
 
   if (!contentType.toLowerCase().includes("application/json")) {
     const text = await response.text().catch(() => "");
+    const responseContext = `${method} ${endpoint} · HTTP ${response.status} · non-JSON response`;
+    console.error("ocr:non-json-response", {
+      method,
+      endpoint,
+      status: response.status,
+      contentType,
+    });
     const responseError = new Error(
       "No se pudo estructurar la respuesta del modelo. Intenta nuevamente.",
     );
     responseError.cause = looksLikeHtmlOrJsonParseError(text)
-      ? "AI response could not be converted to structured output"
-      : "OCR endpoint returned a non-JSON response";
+      ? `${responseContext} · AI returned HTML instead of JSON`
+      : responseContext;
     throw responseError;
   }
 
   try {
     return (await response.json()) as ProcessResponse;
   } catch {
+    const responseContext = `${method} ${endpoint} · HTTP ${response.status} · invalid JSON response`;
+    console.error("ocr:invalid-json-response", {
+      method,
+      endpoint,
+      status: response.status,
+      contentType,
+    });
     const responseError = new Error(
       "No se pudo estructurar la respuesta del modelo. Intenta nuevamente.",
     );
-    responseError.cause = "AI response could not be converted to structured output";
+    responseError.cause = responseContext;
     throw responseError;
   }
 }
@@ -265,11 +420,11 @@ function buildSuccessDetails(
 ) {
   const parts =
     resultQuality === "local-fallback"
-      ? ["Extraccion basica generada desde texto del PDF", "Salida CSV", "Motor ADALO"]
+      ? ["Extraccion basica generada desde texto del PDF", "Salida CSV/JSON", "Motor ADALO"]
       : resultQuality === "partial"
         ? [
             "Se extrajo informacion util, aunque algunas secciones no pudieron estructurarse completamente",
-            "Salida CSV",
+            "Salida CSV/JSON",
             "Motor ADALO",
           ]
         : [
@@ -277,7 +432,7 @@ function buildSuccessDetails(
             ...(typeof columnCount === "number" && columnCount > 0
               ? [`${columnCount} campos estructurados`]
               : []),
-            "Salida CSV",
+            "Salida CSV/JSON",
             "Motor ADALO",
           ];
 
@@ -296,7 +451,18 @@ function formatDuration(durationMs: number) {
   return `${(durationMs / 1000).toFixed(1).replace(".", ",")} s`;
 }
 
+function formatExtractionMode(value?: string) {
+  if (value === "vision_table") return "OCR visual tabular";
+  if (value === "text_chunks") return "Texto por chunks";
+  if (value === "direct_file") return "Archivo directo";
+  return "Motor ADALO";
+}
+
 function toSafeClientErrorMessage(error: unknown) {
+  if (looksLikeUploadError(error)) {
+    return getUploadErrorMessage(error);
+  }
+
   if (looksLikeQuotaOrSaturationError(error)) {
     return "Motor temporalmente ocupado. El servicio alcanzo temporalmente su limite de procesamiento. Espera unos minutos e intenta nuevamente.";
   }
@@ -312,7 +478,54 @@ function toSafeClientErrorMessage(error: unknown) {
   return "No pudimos procesar el archivo";
 }
 
+function looksLikeUploadError(value: unknown) {
+  const text =
+    value instanceof Error
+      ? `${value.message} ${String(value.cause ?? "")}`
+      : String(value ?? "");
+  const normalized = text.toLowerCase();
+
+  return (
+    normalized.includes("blob") ||
+    normalized.includes("upload") ||
+    normalized.includes("subir el archivo") ||
+    normalized.includes("file too large") ||
+    normalized.includes("413")
+  );
+}
+
+function getUploadErrorMessage(value: unknown) {
+  const text =
+    value instanceof Error
+      ? `${value.message} ${String(value.cause ?? "")}`
+      : String(value ?? "");
+  const normalized = text.toLowerCase();
+
+  if (
+    normalized.includes("too large") ||
+    normalized.includes("file_too_large") ||
+    normalized.includes("413") ||
+    normalized.includes("50 mb")
+  ) {
+    return "El archivo supera el tamaño máximo permitido de 50 MB.";
+  }
+
+  return "No pudimos subir el archivo";
+}
+
 function toSafeTechnicalDetail(value: string) {
+  if (value.includes("/api/ocr/process") && value.includes("HTTP")) {
+    return value
+      .replace(/\s+/g, " ")
+      .replace(/</g, "[")
+      .replace(/>/g, "]")
+      .slice(0, 180);
+  }
+
+  if (looksLikeProfileValidationError(value)) {
+    return "";
+  }
+
   if (looksLikeQuotaOrSaturationError(value)) {
     return "Limite temporal del motor IA.";
   }
@@ -322,6 +535,16 @@ function toSafeTechnicalDetail(value: string) {
   }
 
   return value.replace(/\s+/g, " ").replace(/</g, "[").replace(/>/g, "]").slice(0, 180);
+}
+
+function looksLikeProfileValidationError(value: unknown) {
+  const normalized = String(value ?? "").toLowerCase();
+
+  return (
+    normalized.includes("profile_extraction_validation_failed") ||
+    normalized.includes("profile-specific ocr validation failed") ||
+    normalized.includes("profile_rejected_generic_line_csv")
+  );
 }
 
 function looksLikeHtmlOrJsonParseError(value: unknown) {

@@ -2,8 +2,11 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 export type AccessSessionPayload = {
   accessCodeId?: string;
+  accessMode?: "client" | "legacy" | "master";
+  allowProfileTesting?: boolean;
   clientId?: string;
   clientProfileId: string;
+  isInternalTest?: boolean;
   planId?: string;
 };
 
@@ -32,8 +35,14 @@ export function verifyAccessSessionCookie(cookieValue?: string): AccessSessionPa
 
     return {
       accessCodeId: typeof parsed.accessCodeId === "string" ? parsed.accessCodeId : undefined,
+      accessMode:
+        parsed.accessMode === "master" || parsed.accessMode === "legacy" || parsed.accessMode === "client"
+          ? parsed.accessMode
+          : "legacy",
+      allowProfileTesting: parsed.allowProfileTesting === true,
       clientId: typeof parsed.clientId === "string" ? parsed.clientId : undefined,
       clientProfileId: parsed.clientProfileId,
+      isInternalTest: parsed.isInternalTest === true,
       planId: typeof parsed.planId === "string" ? parsed.planId : undefined,
     };
   } catch {

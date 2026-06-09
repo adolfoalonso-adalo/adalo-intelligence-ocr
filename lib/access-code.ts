@@ -7,10 +7,21 @@ export function hashAccessCode(code: string): string {
 }
 
 export function verifyAccessCode(code: string): boolean {
+  if (isReservedProfileAccessCode(code)) return false;
+
   const hashes = getConfiguredHashes();
   const candidate = hashAccessCode(code);
 
   return hashes.some((hash) => safeCompare(candidate, hash));
+}
+
+export function verifyMasterAccessCode(code: string): boolean {
+  if (isReservedProfileAccessCode(code)) return false;
+
+  const masterHash = normalizeConfiguredHash(process.env.MASTER_ACCESS_CODE_HASH);
+  if (!masterHash) return false;
+
+  return safeCompare(hashAccessCode(code), masterHash);
 }
 
 export function createAccessCookie(): string {
@@ -61,12 +72,22 @@ export function getAccessRateLimitConfig() {
 function getConfiguredHashes() {
   return (process.env.ACCESS_CODE_HASHES || "")
     .split(",")
-    .map((hash) => hash.trim().toLowerCase())
+    .map(normalizeConfiguredHash)
     .filter(Boolean);
 }
 
 function normalizeAccessCode(code: string) {
   return code.trim();
+}
+
+export function isReservedProfileAccessCode(code: string) {
+  const normalized = normalizeAccessCode(code).toUpperCase();
+
+  return normalized === "ADALO-2026-MATEO" || normalized === "ADALO-2026-MOVIMIENTO";
+}
+
+function normalizeConfiguredHash(value?: string) {
+  return (value || "").trim().replace(/^['"]|['"]$/g, "").toLowerCase();
 }
 
 function signPayload(payload: string) {

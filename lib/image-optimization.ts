@@ -20,7 +20,10 @@ export async function prepareImageForOcr(
     const sharp = sharpModule.default;
     const maxDimension = readPositiveInteger(process.env.OCR_IMAGE_MAX_DIMENSION, 1800);
     const quality = clamp(readPositiveInteger(process.env.OCR_IMAGE_JPEG_QUALITY, 85), 40, 95);
-    const pipeline = sharp(fileBuffer).rotate();
+    const contrastNormalizationEnabled = isContrastNormalizationEnabled();
+    const pipeline = contrastNormalizationEnabled
+      ? sharp(fileBuffer).rotate().normalize()
+      : sharp(fileBuffer).rotate();
     const metadata = await pipeline.metadata();
     const shouldResize =
       typeof metadata.width === "number" &&
@@ -49,6 +52,7 @@ export async function prepareImageForOcr(
         height: output.info.height,
         mimeType,
         optimizationSkipped: true,
+        contrastNormalized: contrastNormalizationEnabled,
         reason: "optimized image was not smaller",
       });
       return null;
@@ -61,6 +65,7 @@ export async function prepareImageForOcr(
       height: output.info.height,
       mimeType: "image/jpeg",
       optimizationSkipped: false,
+      contrastNormalized: contrastNormalizationEnabled,
     });
 
     return {
@@ -84,6 +89,11 @@ export async function prepareImageForOcr(
 
 function isImageOptimizationEnabled() {
   const value = process.env.OCR_IMAGE_OPTIMIZATION_ENABLED ?? "true";
+  return value.trim().replace(/^['"]|['"]$/g, "").toLowerCase() !== "false";
+}
+
+function isContrastNormalizationEnabled() {
+  const value = process.env.OCR_IMAGE_CONTRAST_NORMALIZATION_ENABLED ?? "true";
   return value.trim().replace(/^['"]|['"]$/g, "").toLowerCase() !== "false";
 }
 

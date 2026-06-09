@@ -16,6 +16,10 @@
 # misc
 .DS_Store
 *.pem
+google-document-ai-key.json
+*google-document-ai-key.json
+service-account*.json
+CUsersluci_DesktopCodexadalo-intelligence-ocrgoogle-document-ai-key.json
 
 # debug
 npm-debug.log*

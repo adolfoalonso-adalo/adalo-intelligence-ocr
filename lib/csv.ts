@@ -4,6 +4,7 @@ export type CsvFileKind =
   | "EXTRACCION_BASICA"
   | "GENERAL"
   | "LISTADO"
+  | "MOVIMIENTO"
   | "PDF_TABULAR";
 
 export function createCsvFileName(kind: CsvFileKind = "GENERAL", date = new Date()) {

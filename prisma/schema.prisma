@@ -107,3 +107,18 @@ model AdminUser {
 
   @@map("admin_users")
 }
+
+model ProfileCorrectionExample {
+  id            String   @id @default(cuid())
+  profileCode   String
+  originalCsv   String?
+  originalJson  Json?
+  correctedCsv  String?
+  correctedJson Json?
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([profileCode, createdAt])
+  @@map("profile_correction_examples")
+}

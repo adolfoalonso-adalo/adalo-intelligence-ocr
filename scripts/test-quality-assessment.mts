@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { getClientProfileById } from "../lib/client-profiles.ts";
+import { assessOCRQuality } from "../lib/ocr-quality.ts";
 import { assessExtractionQuality } from "../lib/structured-output.ts";
 
 const commercialColumns = [
@@ -100,6 +102,94 @@ const tableHigh = assessExtractionQuality(
 );
 
 assert.equal(tableHigh.quality, "high");
+
+const logisticsMovementColumns = [
+  "FechaSalida",
+  "CantidadCamion",
+  "Unidad",
+  "Tons",
+  "Proveedor",
+  "Producto",
+  "Origen",
+  "RutaCaminosPuna",
+  "Destino",
+  "FechaArribo",
+  "CantidadEscoltas",
+];
+const logisticsMovementHigh = assessExtractionQuality(
+  logisticsMovementColumns,
+  [
+    {
+      FechaSalida: "01/06/2026",
+      CantidadCamion: "1",
+      Unidad: "Camion",
+      Tons: "28",
+      Proveedor: "Proveedor SA",
+      Producto: "Cal",
+      Origen: "Origen",
+      RutaCaminosPuna: "Ruta Caminos Puna",
+      Destino: "Destino",
+      FechaArribo: "02/06/2026",
+      CantidadEscoltas: "No",
+    },
+  ],
+  {
+    clientProfileId: "movimiento",
+    documentType: "table",
+    extractionProfile: "vision-table",
+  },
+);
+
+assert.equal(logisticsMovementHigh.quality, "high");
+
+const movimientoProfile = getClientProfileById("movimiento");
+const movementCsv = [
+  logisticsMovementColumns.map((column) => `"${column}"`).join(","),
+  logisticsMovementColumns
+    .map((column) =>
+      `"${{
+        FechaSalida: "01/06/2026",
+        CantidadCamion: "1",
+        Unidad: "Camion",
+        Tons: "28",
+        Proveedor: "Proveedor SA",
+        Producto: "Cal",
+        Origen: "Origen",
+        RutaCaminosPuna: "Ruta Caminos Puna",
+        Destino: "Destino",
+        FechaArribo: "02/06/2026",
+        CantidadEscoltas: "No",
+      }[column] ?? ""}"`,
+    )
+    .join(","),
+].join("\n");
+const movementGate = assessOCRQuality(
+  {
+    csvContent: movementCsv,
+    extractedRows: 1,
+    fileName: "ADALO_OCR_MOVIMIENTO.csv",
+    modelUsed: "test",
+    resultQuality: "ai",
+  },
+  movimientoProfile,
+);
+
+assert.equal(movementGate.acceptable, true);
+assert.equal(movementGate.qualityStatus, "completed");
+
+const genericGate = assessOCRQuality(
+  {
+    csvContent: '"Pagina","Linea","Texto"\n"1","1","Escaneado con CamScanner https://v3.camscanner.com"',
+    extractedRows: 1,
+    fileName: "ADALO_OCR_MOVIMIENTO.csv",
+    modelUsed: "test",
+    resultQuality: "local-fallback",
+  },
+  movimientoProfile,
+);
+
+assert.equal(genericGate.acceptable, false);
+assert.equal(genericGate.shouldFallback, true);
 
 const structuredDocument = assessExtractionQuality(
   [

@@ -5,6 +5,7 @@ const statusCopy: Record<OcrStatus, string> = {
   idle: "Esperando archivo",
   validating: "Validando archivo...",
   ready: "Archivo listo para procesar",
+  uploading: "Subiendo archivo...",
   processing: "Procesando archivo...",
   done: "Procesamiento completado",
   error: "No pudimos procesar el archivo",
@@ -27,7 +28,8 @@ export function ProcessingStatus({
 }: ProcessingStatusProps) {
   const isError = status === "error";
   const isDone = status === "done";
-  const isBusy = status === "validating" || status === "processing";
+  const isBusy =
+    status === "validating" || status === "uploading" || status === "processing";
   const title = isError ? getErrorTitle(details) : getStatusTitle(status, details, resultQuality);
   const description = isError ? getErrorDescription(details) : details;
 
@@ -79,6 +81,18 @@ function getErrorTitle(details?: string) {
     return "No pudimos estructurar el archivo";
   }
 
+  if (normalized.includes("no se pudo estructurar la tabla logistica")) {
+    return "No se pudo estructurar la tabla logistica";
+  }
+
+  if (
+    normalized.includes("extracción básica no es adecuada") ||
+    normalized.includes("extraccion basica no es adecuada") ||
+    normalized.includes("adalo-2026-movimiento")
+  ) {
+    return "OCR visual tabular requerido";
+  }
+
   if (
     normalized.includes("limite por documento") ||
     normalized.includes("límite por documento") ||
@@ -107,6 +121,18 @@ function getErrorDescription(details?: string) {
 
   if (normalized.includes("no pudimos estructurar el archivo")) {
     return "El documento fue leido parcialmente, pero no se obtuvo una tabla confiable. Proba con una imagen mas nitida o mas centrada.";
+  }
+
+  if (normalized.includes("no se pudo estructurar la tabla logistica")) {
+    return "El documento fue leido parcialmente, pero no se detecto una tabla valida para el perfil Movimiento. Proba con una imagen mas clara o solicita revision manual.";
+  }
+
+  if (
+    normalized.includes("extracción básica no es adecuada") ||
+    normalized.includes("extraccion basica no es adecuada") ||
+    normalized.includes("adalo-2026-movimiento")
+  ) {
+    return "La extracción básica no es adecuada para este documento. Reprocesá con OCR visual de tablas usando el perfil ADALO-2026-MOVIMIENTO.";
   }
 
   if (

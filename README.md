@@ -40,7 +40,7 @@ pnpm test:structured-output
 pnpm test:pdf-fallback
 pnpm test:ocr-pdf-flow
 pnpm test:ocr-force-local
-pnpm hash:access-code "ADALO-2026-CLIENTE"
+pnpm hash:access-code "ADALO-ADMIN-2026-TEST-8K4P"
 ```
 
 ## Variables de entorno
@@ -52,11 +52,15 @@ Variables administrativas nuevas:
 ```env
 DATABASE_URL=""
 ADMIN_EMAILS="adolfoalonso19@gmail.com"
+MASTER_ACCESS_CODE_HASH=""
+MASTER_ACCESS_EMAIL="adolfoalonso19@gmail.com"
 ```
 
 `DATABASE_URL` habilita la administración manual con Postgres/Supabase Postgres. Si no está configurada, el OCR conserva compatibilidad temporal con `ACCESS_CODE_HASHES`.
 
 `ADMIN_EMAILS` es una lista separada por comas de cuentas Google autorizadas para entrar a `/admin`.
+
+`MASTER_ACCESS_CODE_HASH` habilita un codigo maestro interno para pruebas OCR del admin. No consume plan comercial y permite seleccionar perfiles documentales internos desde `/app`.
 
 La protección de `/admin` es server-side: la página, las server actions y las APIs administrativas validan sesión Google y comparan el email normalizado contra `ADMIN_EMAILS` antes de cargar datos o ejecutar acciones. Un usuario sin sesión es redirigido al login; un usuario logueado pero no autorizado ve `Acceso denegado`.
 
@@ -137,13 +141,19 @@ GOOGLE_AI_RETRY_BASE_DELAY_MS="750"
 
 MAX_FILE_SIZE_MB="50"
 MAX_PDF_SIZE_MB="50"
-MAX_IMAGE_SIZE_MB="20"
+MAX_IMAGE_SIZE_MB="50"
+OCR_BLOB_MAX_FILE_SIZE_MB="50"
+BLOB_READ_WRITE_TOKEN=""
 OCR_TIMEOUT_SECONDS="120"
 OCR_DIRECT_FILE_TIMEOUT_SECONDS="45"
 OCR_CHUNK_TIMEOUT_SECONDS="45"
+OCR_MOVEMENT_PAGE_TIMEOUT_SECONDS="45"
 OCR_CHUNK_MAX_CHARS="12000"
 OCR_CHUNK_OVERLAP_CHARS="500"
 OCR_MAX_PDF_PAGES="30"
+OCR_PDF_RENDER_MAX_WIDTH="2200"
+OCR_PDF_RENDER_DENSITY="220"
+OCR_PDF_RENDER_JPEG_QUALITY="90"
 OCR_BALANCED_MODE="true"
 OCR_FAST_MODE="false"
 OCR_MAX_PROCESSING_SECONDS="120"
@@ -153,6 +163,19 @@ OCR_ALLOW_CHUNKS_IN_FAST_MODE="false"
 OCR_IMAGE_OPTIMIZATION_ENABLED="true"
 OCR_IMAGE_MAX_DIMENSION="1800"
 OCR_IMAGE_JPEG_QUALITY="85"
+OCR_IMAGE_CONTRAST_NORMALIZATION_ENABLED="true"
+OCR_PRIMARY_PROVIDER="google-ai"
+OCR_FALLBACK_PROVIDER="google-document-ai"
+OCR_ADVANCED_PROVIDER="google-document-ai"
+OCR_ENABLE_FALLBACK="true"
+OCR_MIN_CONFIDENCE="0.75"
+GOOGLE_CLOUD_PROJECT_ID=""
+GOOGLE_DOCUMENT_AI_LOCATION="us"
+GOOGLE_DOCUMENT_AI_PROCESSOR_ID=""
+GOOGLE_APPLICATION_CREDENTIALS=""
+GOOGLE_APPLICATION_CREDENTIALS_JSON=""
+GOOGLE_CLIENT_EMAIL=""
+GOOGLE_PRIVATE_KEY=""
 FORCE_LOCAL_PDF_FALLBACK="false"
 
 RATE_LIMIT_OCR_REQUESTS="5"
@@ -162,6 +185,8 @@ UPSTASH_REDIS_REST_URL=""
 UPSTASH_REDIS_REST_TOKEN=""
 
 ACCESS_CODE_HASHES=""
+MASTER_ACCESS_CODE_HASH=""
+MASTER_ACCESS_EMAIL="adolfoalonso19@gmail.com"
 ACCESS_COOKIE_SECRET=""
 ACCESS_CODE_COOKIE_NAME="adalo_ocr_access"
 ACCESS_CODE_TTL_SECONDS="1800"
@@ -179,7 +204,33 @@ La validación técnica acepta `.jpg` y `.jpeg`. La UI muestra `JPG` para simpli
 - JPG/JPEG
 - PNG
 
-`MAX_FILE_SIZE_MB` define el techo general. `MAX_PDF_SIZE_MB` limita PDFs y `MAX_IMAGE_SIZE_MB` limita JPG/JPEG/PNG. Por defecto, PDFs admiten hasta 50 MB e imagenes hasta 20 MB.
+`MAX_FILE_SIZE_MB` define el techo general. `MAX_PDF_SIZE_MB` limita PDFs y `MAX_IMAGE_SIZE_MB` limita JPG/JPEG/PNG. Por defecto, PDFs e imagenes admiten hasta 50 MB. Los limites menores definidos por cada plan siguen aplicandose antes de procesar.
+
+## Cargas de archivos con Vercel Blob
+
+Los documentos no se envian dentro del body de `/api/ocr/process`. La interfaz usa Vercel Blob Client Uploads para transferir el archivo directamente desde el navegador a un Blob Store privado y evitar el limite de 4,5 MB de las Vercel Functions.
+
+Flujo:
+
+1. El navegador solicita un token temporal a `POST /api/upload`.
+2. `/api/upload` valida sesion Google, codigo de acceso, plan, MIME, tamano y prefijo de la sesion.
+3. El navegador sube el archivo directamente a Vercel Blob mediante multipart upload.
+4. La interfaz llama `POST /api/ocr/process` con JSON liviano: URL, pathname, nombre, MIME, tamano y perfil interno.
+5. La API valida la metadata con el Blob Store, descarga el archivo privado con `get()`, ejecuta OCR y elimina el Blob en `finally`.
+
+Configuracion en Vercel:
+
+1. Crear un Blob Store desde `Storage` y elegir acceso `Private`.
+2. Conectarlo al proyecto y a los entornos Production/Preview necesarios.
+3. Confirmar que Vercel agrego `BLOB_READ_WRITE_TOKEN`.
+4. Definir `OCR_BLOB_MAX_FILE_SIZE_MB="50"`.
+5. Redeployar.
+
+Para desarrollo local, traer el token con `vercel env pull` o agregar `BLOB_READ_WRITE_TOKEN` manualmente a `.env.local`.
+
+`/api/ocr/process` acepta solamente `POST application/json`; no recibe archivos, base64 ni parametros por querystring. Las URLs externas arbitrarias se rechazan: el pathname debe pertenecer al prefijo de la sesion y coincidir con la metadata devuelta por el Blob Store del proyecto.
+
+Los Blobs son temporales. La API intenta borrarlos tanto en exito como en error. Una falla de limpieza solo genera un warning seguro y no reemplaza la respuesta OCR.
 
 ## CSV y Microsoft 365
 
@@ -218,15 +269,152 @@ Si no hay señales claras, la app usa modo `auto` y el motor decide la estructur
 
 Los archivos en `test-files/` se usan solo para pruebas de desarrollo. Los documentos reales se procesan desde la carga en la UI.
 
-## Perfiles internos por codigo de acceso
+## Perfiles documentales internos
 
-La herramienta puede adaptar internamente el prompt y la estructura CSV segun el codigo de acceso validado. Esto no se muestra al usuario final y no requiere que el usuario elija categorias.
+La herramienta puede adaptar internamente el prompt y la estructura CSV segun el perfil asociado al cliente o al modo de prueba master. Esto no se muestra al usuario final y no requiere que el usuario elija categorias.
+
+`ADALO-2026-MATEO` y `ADALO-2026-MOVIMIENTO` son identificadores documentales internos, no codigos de acceso publicos. No validan como PIN aunque sus hashes esten por error en `ACCESS_CODE_HASHES`.
 
 El perfil inicial `ADALO-2026-MATEO` usa la plantilla `commercial-operations`, orientada a comprobantes, facturas, tickets, remitos, SENASA, ARCA, DTVe, CADTV, certificados de carga, documentos de movimiento, productos agro/comerciales y transporte.
 
-Para usarlo, el hash del codigo debe estar incluido en `ACCESS_CODE_HASHES`. Al validar el codigo, el servidor guarda solo un `clientProfileId` firmado en una cookie segura; no guarda ni expone el codigo plano.
+El perfil `ADALO-2026-MOVIMIENTO` usa la plantilla `vision-table`, orientada a tablas escaneadas de movimientos logisticos de camiones y logistica minera. Esta diseñado para PDFs o imagenes con paginas inclinadas, sombras, marcas de CamScanner, sellos o encabezados incompletos.
+
+Columnas esperadas:
+
+```text
+FechaSalida, CantidadCamion, Unidad, Tons, Proveedor, Producto, Origen,
+RutaCaminosPuna, Destino, FechaArribo, CantidadEscoltas
+```
+
+Para este perfil, la salida CSV final debe contener solo esas columnas de tabla. El JSON agrega metadata por fila como `pageNumber`, `rowNumber`, `confidence` y `warnings`. Si el resultado contiene columnas genericas `Pagina`, `Linea` y `Texto`, la extraccion se considera fallida y la API devuelve un mensaje claro para reprocesar con OCR visual tabular usando el perfil `ADALO-2026-MOVIMIENTO`.
+
+Para PDFs escaneados o de CamScanner del perfil `movimiento`, la app no acepta el fallback local `Pagina/Linea/Texto`. Primero intenta analisis visual del archivo completo; si no pasa el quality gate, renderiza paginas del PDF como imagenes y procesa cada pagina con un prompt especifico de tabla logistica. Luego une filas validas, elimina encabezados repetidos, descarta marcas de CamScanner/sellos/folios y vuelve a ejecutar el quality gate. Si no reconstruye una tabla valida, falla con `failed_quality_gate_movimiento` y no entrega CSV/JSON descargable como exito.
+
+La arquitectura de perfiles queda preparada para futuros codigos con:
+
+- `code`;
+- `name`;
+- `documentType`;
+- `extractionMode`;
+- `expectedColumns` o `expectedFields`;
+- prompt especifico;
+- reglas de normalizacion;
+- reglas de validacion;
+- textos a ignorar;
+- formato de salida CSV/JSON;
+- mensajes de error propios.
+
+Los codigos comerciales reales se generan desde `/admin` y quedan asociados a un cliente, plan y `profileId`. Para pruebas internas, el admin usa un codigo maestro configurado en `MASTER_ACCESS_CODE_HASH`; en ese modo se puede seleccionar `general`, `mateo`, `movimiento` o `technical-admin` como perfil de prueba sin convertir esos perfiles en codigos publicos.
 
 Este patron permite mejorar velocidad y calidad para clientes con documentos repetitivos, manteniendo la UI simple.
+
+## Arquitectura OCR documental
+
+La app ahora trata el OCR como extraccion documental estructurada, no solo como lectura de texto.
+
+Antes de aceptar un resultado, el servidor ejecuta:
+
+1. Preprocesamiento documental: detecta si el archivo es imagen, PDF digital o PDF probablemente escaneado; busca senales de tabla; identifica marcas a ignorar como CamScanner, folios, sellos, sombras o bordes definidos por el perfil.
+2. Proveedor OCR primario: por defecto `google-ai`, que usa el flujo actual con Gemini/Gemma configurables.
+3. Quality gate: valida que la salida cumpla el perfil, columnas esperadas, filas utiles, confianza minima y ausencia de texto corrupto o marcas de escaneo como datos.
+4. Fallback avanzado: si el resultado no pasa calidad y `OCR_ENABLE_FALLBACK="true"`, se intenta Google Document AI cuando esta configurado.
+
+La interfaz interna de proveedores permite mantener Google AI como motor principal y usar Google Document AI para OCR avanzado de PDFs escaneados:
+
+```ts
+interface OCRProvider {
+  name: string;
+  supportsTables: boolean;
+  supportsScannedPdf: boolean;
+  extract(input, profile): Promise<OCRResult>;
+}
+```
+
+Variables:
+
+```env
+OCR_PRIMARY_PROVIDER="google-ai"
+OCR_FALLBACK_PROVIDER="google-document-ai"
+OCR_ADVANCED_PROVIDER="google-document-ai"
+OCR_ENABLE_FALLBACK="true"
+OCR_MIN_CONFIDENCE="0.75"
+GOOGLE_CLOUD_PROJECT_ID=""
+GOOGLE_DOCUMENT_AI_LOCATION="us"
+GOOGLE_DOCUMENT_AI_PROCESSOR_ID=""
+GOOGLE_APPLICATION_CREDENTIALS=""
+GOOGLE_APPLICATION_CREDENTIALS_JSON=""
+GOOGLE_CLIENT_EMAIL=""
+GOOGLE_PRIVATE_KEY=""
+```
+
+Google Document AI admite tres formas de autenticacion, evaluadas en este orden:
+
+1. `GOOGLE_APPLICATION_CREDENTIALS`: ruta local al JSON de una cuenta de servicio. Es la opcion recomendada para desarrollo.
+2. `GOOGLE_APPLICATION_CREDENTIALS_JSON`: contenido JSON completo de la cuenta de servicio, adecuado para una variable secreta en Vercel.
+3. `GOOGLE_CLIENT_EMAIL` y `GOOGLE_PRIVATE_KEY`: credenciales separadas. La clave privada puede guardarse con saltos escapados `\n`; la app los normaliza al construir el cliente.
+
+Ejemplo local:
+
+```env
+GOOGLE_APPLICATION_CREDENTIALS="C:\ruta\segura\google-document-ai.json"
+```
+
+Ejemplo Vercel con JSON completo:
+
+```env
+GOOGLE_APPLICATION_CREDENTIALS_JSON='{"client_email":"...","private_key":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"}'
+```
+
+Alternativa Vercel con variables separadas:
+
+```env
+GOOGLE_CLIENT_EMAIL="document-ai@proyecto.iam.gserviceaccount.com"
+GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+```
+
+No configures una ruta local en `GOOGLE_APPLICATION_CREDENTIALS` dentro de Vercel. Si esa variable existe, tiene prioridad sobre las credenciales embebidas. El archivo o contenido de credenciales no debe guardarse en Git ni imprimirse en logs.
+
+Si no hay ninguna modalidad de credenciales completa, Google Document AI queda deshabilitado con un warning seguro en servidor. El cliente no se inicializa durante el build y el flujo OCR principal puede continuar con Google AI.
+
+`OCR_ADVANCED_PROVIDER` tiene prioridad sobre el alias anterior `OCR_FALLBACK_PROVIDER`, de modo que una configuracion heredada no impida activar Google Document AI.
+
+Cuando el preprocesamiento detecta un PDF escaneado, Document AI se intenta antes del flujo convencional. Document AI recupera el texto y las tablas; luego Gemini normaliza esa salida al JSON estructurado existente y el servidor genera CSV/JSON seguros. No se pide CSV directo a ninguno de los modelos.
+
+Si el flujo principal devuelve la extraccion generica `Pagina`, `Linea`, `Texto`, el quality gate la deriva a Document AI. Con `google-document-ai` configurado como fallback, esa salida basica no se marca como exito si el proveedor avanzado no logra producir una estructura aceptable.
+
+Configuracion minima:
+
+1. Crear un processor en Google Cloud Document AI.
+2. Otorgar acceso al processor a la cuenta de servicio.
+3. Configurar proyecto, ubicacion e identificador del processor.
+4. Definir una de las modalidades de credenciales anteriores.
+
+En produccion, las credenciales deben configurarse como secreto del entorno y nunca incluirse en el repositorio.
+
+La metadata JSON puede incluir `primaryProvider`, `fallbackProvider`, `providerUsed`, `profileCode`, `profileName`, `extractionMode`, `confidence`, `qualityStatus`, `warnings`, `pagesProcessed` y `rowsExtracted`.
+
+Estados de calidad:
+
+- `completed`
+- `completed_with_warnings`
+- `failed_quality_gate`
+- `fallback_required`
+- `manual_review_required`
+
+Para `ADALO-2026-MOVIMIENTO`, el quality gate exige exactamente estas columnas:
+
+```text
+FechaSalida, CantidadCamion, Unidad, Tons, Proveedor, Producto, Origen,
+RutaCaminosPuna, Destino, FechaArribo, CantidadEscoltas
+```
+
+No acepta `Pagina`, `Linea`, `Texto` como salida final, URLs de CamScanner, texto corrupto ni filas vacias. Si una celda es ilegible, debe quedar vacia. Las fechas se prefieren en `DD/MM/YYYY`; si no cumplen, el resultado puede quedar con advertencias.
+
+## Ejemplos corregidos por perfil
+
+La base queda preparada con `profile_correction_examples` para una etapa futura de aprendizaje asistido. Esa tabla permite asociar a un `profileCode` una salida original y una salida corregida en CSV/JSON.
+
+El OCR normal no guarda automaticamente documentos ni resultados completos. Los ejemplos corregidos deben guardarse de forma explicita en una futura accion administrativa. Cuando existen ejemplos para un perfil, se agregan como referencia resumida al prompt del proveedor Google para mejorar extracciones posteriores.
 
 ## Optimización de imágenes
 
@@ -244,6 +432,7 @@ Variables:
 OCR_IMAGE_OPTIMIZATION_ENABLED="true"
 OCR_IMAGE_MAX_DIMENSION="1800"
 OCR_IMAGE_JPEG_QUALITY="85"
+OCR_IMAGE_CONTRAST_NORMALIZATION_ENABLED="true"
 ```
 
 Para mejores fotos de tablas o listados: usar buena iluminación, evitar sombras, enfocar la tabla completa y tomar la foto lo más perpendicular posible.
@@ -256,13 +445,13 @@ Para mejores fotos de tablas o listados: usar buena iluminación, evitar sombras
 4. Para crear un hash:
 
 ```bash
-corepack pnpm hash:access-code "ADALO-2026-CLIENTE"
+corepack pnpm hash:access-code "ADALO-ADMIN-2026-TEST-8K4P"
 ```
 
 5. Pegá el resultado en:
 
 ```env
-ACCESS_CODE_HASHES="resultado_hash"
+MASTER_ACCESS_CODE_HASH="resultado_hash"
 ```
 
 6. Podés configurar varios hashes separados por coma.
@@ -478,6 +667,10 @@ OCR_CHUNK_OVERLAP_CHARS="500"
 OCR_MAX_PDF_PAGES="30"
 OCR_DIRECT_FILE_TIMEOUT_SECONDS="45"
 OCR_CHUNK_TIMEOUT_SECONDS="45"
+OCR_MOVEMENT_PAGE_TIMEOUT_SECONDS="45"
+OCR_PDF_RENDER_MAX_WIDTH="2200"
+OCR_PDF_RENDER_DENSITY="220"
+OCR_PDF_RENDER_JPEG_QUALITY="90"
 ```
 
 Si el PDF no tiene texto extraíble, parece escaneado o la extracción local falla, la app usa el procesamiento directo con Google AI como fallback. `OCR_DIRECT_FILE_TIMEOUT_SECONDS` controla la espera de análisis directo y `OCR_TIMEOUT_SECONDS` queda como compatibilidad.

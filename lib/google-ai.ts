@@ -1,9 +1,18 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import type { ClientProfile } from "@/lib/client-profiles";
+import {
+  getClientProfileCode,
+  isVisionTableProfile,
+  type ClientProfile,
+} from "@/lib/client-profiles";
 import { createCsvFileName } from "@/lib/csv";
 import { chunkPdfPages, PdfChunkingError } from "@/lib/chunk-text";
 import type { DocumentType } from "@/lib/document-type";
 import { createLocalPdfTextFallbackResult } from "@/lib/pdf-local-fallback";
+import {
+  getPdfPageCount,
+  renderPdfPageToImage,
+  PdfPageRenderError,
+} from "@/lib/pdf-page-render";
 import {
   extractPdfTextByPages,
   PdfTextExtractionError,
@@ -16,6 +25,7 @@ import {
   type ExtractionQualityContext,
   isRecoverableStructuredOutputError,
   mergeStructuredOutputs,
+  type ParsedStructuredOutput,
   parseAiStructuredOutput,
   recordsToCsv,
   StructuredOutputError,
@@ -26,8 +36,15 @@ export type CsvAnalysisResult = {
   csvContent: string;
   fileName: string;
   extractedRows: number;
+  jsonColumns?: string[];
+  jsonRows?: Record<string, string>[];
   modelUsed: string;
+  profileValidationWarnings?: string[];
   resultQuality?: "ai" | "partial" | "local-fallback";
+  extractionMode?: string;
+  pagesProcessed?: number;
+  rowsExtracted?: number;
+  warnings?: string[];
 };
 
 export class CsvAnalysisError extends Error {
@@ -76,6 +93,16 @@ class AiOutputQualityError extends Error {
     super("AI result quality was too low");
     this.name = "AiOutputQualityError";
     this.technicalDetail = reason;
+  }
+}
+
+class ProfileExtractionValidationError extends Error {
+  readonly technicalDetail: string;
+
+  constructor(message: string, technicalDetail: string) {
+    super(message);
+    this.name = "ProfileExtractionValidationError";
+    this.technicalDetail = technicalDetail;
   }
 }
 
@@ -170,12 +197,91 @@ ${getClientProfilePromptGuidance(clientProfile)}
 ${getDocumentTypePromptGuidance(documentType)}`;
 }
 
+function createAdvancedOcrNormalizationPrompt({
+  clientProfile,
+  documentType,
+  extractedTablesText,
+  extractedText,
+  fileName,
+  pageCount,
+  providerLabel,
+}: {
+  clientProfile?: ClientProfile;
+  documentType: DocumentType;
+  extractedTablesText?: string;
+  extractedText: string;
+  fileName: string;
+  pageCount?: number;
+  providerLabel: string;
+}) {
+  return `Actua como normalizador documental ADALO.
+
+Recibiste texto y tablas extraidas por un proveedor OCR avanzado (${providerLabel}). Tu tarea NO es hacer OCR visual, sino convertir esa salida OCR a JSON estructurado para que el servidor genere CSV/JSON seguros.
+
+Archivo: ${fileName}
+Paginas procesadas: ${pageCount ?? "desconocido"}
+
+${getClientProfilePromptGuidance(clientProfile)}
+
+${getDocumentTypePromptGuidance(documentType)}
+
+Reglas generales:
+- Responde exclusivamente JSON valido.
+- El primer caracter debe ser { y el ultimo debe ser }.
+- No uses markdown.
+- No uses HTML.
+- No inventes datos.
+- Si un dato no aparece o es ilegible, usa "".
+- No devuelvas Pagina/Linea/Texto como estructura final.
+- Si hay tablas, prioriza filas y columnas reales de tabla.
+- El servidor va a generar el CSV final; no devuelvas CSV directo.
+
+Si el perfil es Movimiento, usa exactamente estas columnas y este orden:
+FechaSalida
+CantidadCamion
+Unidad
+Tons
+Proveedor
+Producto
+Origen
+RutaCaminosPuna
+Destino
+FechaArribo
+CantidadEscoltas
+
+Para Movimiento:
+- una fila por cada movimiento logistico real;
+- ignora CamScanner, URLs, folios, sellos, bordes, sombras y numeros de pagina;
+- no mezcles filas;
+- normaliza fechas a DD/MM/YYYY solo cuando sea claro;
+- si no hay filas validas, devuelve rows: [].
+
+Estructura requerida:
+{
+  "mode": "table" | "structured",
+  "columns": [],
+  "rows": []
+}
+
+Tablas detectadas por OCR avanzado:
+${truncateAdvancedOcrText(extractedTablesText || "Sin tablas detectadas")}
+
+Texto completo detectado por OCR avanzado:
+${truncateAdvancedOcrText(extractedText)}`;
+}
+
 function getClientProfilePromptGuidance(clientProfile?: ClientProfile) {
   if (!clientProfile || clientProfile.defaultExtractionProfile === "general") {
     return "";
   }
 
   return `Perfil interno de extraccion: ${clientProfile.defaultExtractionProfile}.
+Codigo de perfil: ${getClientProfileCode(clientProfile)}.
+Nombre de perfil: ${clientProfile.label}.
+Modo de extraccion recomendado: ${clientProfile.extractionMode ?? "auto"}.
+Tipo documental interno: ${clientProfile.documentType ?? "auto"}.
+Columnas/campos esperados: ${(clientProfile.expectedColumns ?? []).join(", ") || "segun documento"}.
+Textos a ignorar: ${(clientProfile.ignoreText ?? []).join(", ") || "ninguno especifico"}.
 ${clientProfile.promptHint || ""}`;
 }
 
@@ -319,6 +425,110 @@ export async function analyzeFileToCsv(
   return result;
 }
 
+export async function analyzeExtractedDocumentToCsv({
+  clientProfile,
+  documentType = "auto",
+  extractedText,
+  extractedTablesText,
+  fileName,
+  pageCount,
+  providerLabel,
+}: {
+  clientProfile?: ClientProfile;
+  documentType?: DocumentType;
+  extractedText: string;
+  extractedTablesText?: string;
+  fileName: string;
+  pageCount?: number;
+  providerLabel: string;
+}): Promise<CsvAnalysisResult> {
+  const apiKey = process.env.GOOGLE_AI_API_KEY;
+  const modelName = process.env.GOOGLE_AI_MODEL || "gemini-2.5-flash";
+  const fallbackModelName = process.env.GOOGLE_AI_FALLBACK_MODEL || "gemini-2.0-flash";
+  const experimentalModelName = process.env.GOOGLE_AI_EXPERIMENTAL_MODEL || "";
+  const budget = createTimeBudget();
+
+  if (!apiKey) {
+    throw new CsvAnalysisError(
+      "Google AI no esta configurado para normalizar la salida OCR avanzada.",
+      "GOOGLE_AI_API_KEY_REQUIRED_FOR_ADVANCED_OCR_NORMALIZATION",
+    );
+  }
+
+  const prompt = createAdvancedOcrNormalizationPrompt({
+    clientProfile,
+    documentType,
+    extractedTablesText,
+    extractedText,
+    fileName,
+    pageCount,
+    providerLabel,
+  });
+  const { output, modelUsed } = await generateStructuredOutputWithResilience({
+    apiKey,
+    budget,
+    experimentalModelName,
+    fallbackModelName,
+    modelName,
+    parts: [prompt],
+    timeoutMs: getMovementVisualPageTimeoutMs(),
+    context: {
+      stage: "direct-file-analysis",
+      documentType,
+      clientProfileId: clientProfile?.id,
+      extractionProfile: clientProfile?.defaultExtractionProfile,
+      model: modelName,
+      mimeType: "text/plain",
+      fileName,
+    },
+  });
+
+  if (output.rows.length === 0) {
+    throw new CsvAnalysisError(
+      "La extraccion avanzada no encontro filas estructurables.",
+      "ADVANCED_OCR_NORMALIZATION_EMPTY_ROWS",
+    );
+  }
+
+  if (isVisionTableProfile(clientProfile) && clientProfile) {
+    const normalized = normalizeVisionTableProfileOutput(output.columns, output.rows, clientProfile);
+    const filteredRows = filterVisionTableRows(normalized.csvRows, clientProfile);
+    const csvContent = recordsToCsv(normalized.csvColumns, filteredRows);
+
+    validateVisionTableProfileOutput({
+      columns: normalized.csvColumns,
+      rows: filteredRows,
+      clientProfile,
+    });
+
+    return {
+      csvContent,
+      extractionMode: "google-document-ai",
+      extractedRows: filteredRows.length,
+      fileName: createCsvFileName(),
+      jsonColumns: normalized.jsonColumns,
+      jsonRows: normalized.jsonRows,
+      modelUsed: `${providerLabel} · ${modelUsed} normalized`,
+      pagesProcessed: pageCount,
+      profileValidationWarnings: normalized.warnings,
+      resultQuality: "ai",
+      rowsExtracted: filteredRows.length,
+      warnings: normalized.warnings,
+    };
+  }
+
+  return {
+    csvContent: recordsToCsv(output.columns, output.rows),
+    extractionMode: "google-document-ai",
+    extractedRows: output.rows.length,
+    fileName: createCsvFileName(),
+    modelUsed: `${providerLabel} · ${modelUsed} normalized`,
+    pagesProcessed: pageCount,
+    resultQuality: "ai",
+    rowsExtracted: output.rows.length,
+  };
+}
+
 type PdfFileOptions = {
   apiKey: string;
   budget: OcrTimeBudget;
@@ -346,6 +556,79 @@ async function analyzePdfFileToCsv({
   let totalTextLength = 0;
   let directFileError: unknown;
   const fileSizeMB = bytesToMegabytes(fileBuffer.byteLength);
+
+  if (isVisionTableProfile(clientProfile) && clientProfile) {
+    try {
+      logOcrStrategy({
+        fileName,
+        fileSizeMB,
+        mimeType: "application/pdf",
+        reason:
+          "Perfil de tabla escaneada: se prioriza OCR visual tabular y se bloquea fallback generico.",
+        strategy: "direct-file",
+      });
+
+      const result = await analyzeDirectFileToCsv({
+        apiKey,
+        budget,
+        experimentalModelName,
+        fallbackModelName,
+        fileName,
+        fileBuffer,
+        mimeType: "application/pdf",
+        modelName,
+        documentType,
+        clientProfile,
+      });
+
+      return validateProfileResultOrThrow(result, clientProfile);
+    } catch (error) {
+      logOcrWarning("Vision table profile extraction failed", {
+        stage: "direct-file-analysis",
+        model: modelName,
+        mimeType: "application/pdf",
+        fileName,
+        errorType: getSafeErrorCode(error),
+        technicalDetail: summarizeSafeError(error),
+      });
+
+      try {
+        logOcrStrategy({
+          fileName,
+          fileSizeMB,
+          mimeType: "application/pdf",
+          reason:
+            "El analisis visual directo no paso el perfil Movimiento; se renderiza el PDF por paginas.",
+          strategy: "direct-file",
+        });
+
+        const visualPagesResult = await analyzeMovementPdfVisualPagesToCsv({
+          apiKey,
+          budget,
+          experimentalModelName,
+          fallbackModelName,
+          fileBuffer,
+          fileName,
+          modelName,
+          documentType,
+          clientProfile,
+        });
+
+        return validateProfileResultOrThrow(visualPagesResult, clientProfile);
+      } catch (visualPagesError) {
+        logOcrWarning("Movement visual pages extraction failed", {
+          stage: "direct-file-analysis",
+          model: modelName,
+          mimeType: "application/pdf",
+          fileName,
+          errorType: getSafeErrorCode(visualPagesError),
+          technicalDetail: summarizeSafeError(visualPagesError),
+        });
+      }
+
+      throw createVisionTableProfileFailure(error);
+    }
+  }
 
   if (shouldTryDirectPdfFirst(fileBuffer)) {
     try {
@@ -573,14 +856,36 @@ async function analyzeDirectFileToCsv({
     strategy: "direct-file",
     model: modelUsed,
   });
-  const csvContent = recordsToCsv(output.columns, output.rows);
-
   if (output.rows.length === 0) {
     throw new CsvAnalysisError(
       "No se pudo estructurar la respuesta del modelo. Intentá nuevamente o probá con un archivo más simple.",
       "AI response did not include rows",
     );
   }
+
+  if (isVisionTableProfile(clientProfile) && clientProfile) {
+    const normalized = normalizeVisionTableProfileOutput(output.columns, output.rows, clientProfile);
+    const csvContent = recordsToCsv(normalized.csvColumns, normalized.csvRows);
+
+    validateVisionTableProfileOutput({
+      columns: normalized.csvColumns,
+      rows: normalized.csvRows,
+      clientProfile,
+    });
+
+    return {
+      csvContent,
+      fileName: createCsvFileName(),
+      extractedRows: normalized.csvRows.length,
+      jsonColumns: normalized.jsonColumns,
+      jsonRows: normalized.jsonRows,
+      modelUsed: `${modelUsed} · vision table`,
+      profileValidationWarnings: normalized.warnings,
+      resultQuality: "ai",
+    };
+  }
+
+  const csvContent = recordsToCsv(output.columns, output.rows);
 
   const quality = assessExtractionQuality(output.columns, output.rows, {
     clientProfileId: clientProfile?.id,
@@ -601,6 +906,282 @@ async function analyzeDirectFileToCsv({
     resultQuality: "ai",
     modelUsed: `${modelUsed} · direct file`,
   };
+}
+
+type MovementVisualPagesOptions = PdfFileOptions & {
+  clientProfile: ClientProfile;
+};
+
+async function analyzeMovementPdfVisualPagesToCsv({
+  apiKey,
+  budget,
+  experimentalModelName,
+  fallbackModelName,
+  fileBuffer,
+  fileName,
+  modelName,
+  documentType,
+  clientProfile,
+}: MovementVisualPagesOptions): Promise<CsvAnalysisResult> {
+  const startedAt = Date.now();
+  assertTimeBudget("direct-file-analysis", budget, 1000);
+  const pageCount = await getPdfPageCount(fileBuffer);
+  const maxPages = Math.min(pageCount, getMaxPdfPages());
+  const outputs = [];
+  const warnings: string[] = [];
+  const modelUsages = new Set<string>();
+  let pagesProcessed = 0;
+
+  if (pageCount > maxPages) {
+    warnings.push(`Se procesaron ${maxPages} de ${pageCount} paginas por limite configurado.`);
+  }
+
+  for (let pageNumber = 1; pageNumber <= maxPages; pageNumber += 1) {
+    if (!hasEnoughTimeBudget(budget, 10000)) {
+      warnings.push(`Pagina ${pageNumber} omitida por presupuesto de tiempo.`);
+      break;
+    }
+
+    const pageOutput = await analyzeMovementVisualPageWithOrientations({
+      apiKey,
+      budget,
+      clientProfile,
+      documentType,
+      experimentalModelName,
+      fallbackModelName,
+      fileBuffer,
+      fileName,
+      modelName,
+      pageNumber,
+    });
+
+    pagesProcessed += 1;
+
+    if (pageOutput.warning) {
+      warnings.push(pageOutput.warning);
+    }
+
+    if (pageOutput.output.rows.length > 0) {
+      outputs.push(pageOutput.output);
+      modelUsages.add(pageOutput.modelUsed);
+    }
+  }
+
+  if (outputs.length === 0) {
+    throw new ProfileExtractionValidationError(
+      "No se pudo estructurar la tabla logistica.",
+      "failed_quality_gate_movimiento",
+    );
+  }
+
+  const merged = mergeMovementVisualPageOutputs(outputs, clientProfile);
+  const csvContent = recordsToCsv(merged.columns, merged.rows);
+
+  validateVisionTableProfileOutput({
+    columns: merged.columns,
+    rows: merged.rows,
+    clientProfile,
+  });
+  logOcrTiming("movement-visual-pages", startedAt, {
+    fileName,
+    strategy: "movement-visual-pages",
+    model: resolveChunkModelUsed(modelUsages, modelName, fallbackModelName),
+  });
+
+  return {
+    csvContent,
+    fileName: createCsvFileName(),
+    extractedRows: merged.rows.length,
+    extractionMode: "movement-visual-pages",
+    jsonColumns: [...merged.columns, "pageNumber", "rowNumber", "confidence", "warnings"],
+    jsonRows: merged.jsonRows,
+    modelUsed: `${resolveChunkModelUsed(modelUsages, modelName, fallbackModelName)} · movement visual pages`,
+    pagesProcessed,
+    profileValidationWarnings: warnings,
+    resultQuality: "ai",
+    rowsExtracted: merged.rows.length,
+    warnings,
+  };
+}
+
+async function analyzeMovementVisualPageWithOrientations({
+  apiKey,
+  budget,
+  clientProfile,
+  documentType,
+  experimentalModelName,
+  fallbackModelName,
+  fileBuffer,
+  fileName,
+  modelName,
+  pageNumber,
+}: MovementVisualPagesOptions & { pageNumber: number }) {
+  const rotations: Array<0 | 90 | 270 | 180> = [0, 90, 270, 180];
+  let lastError: unknown;
+
+  for (const rotation of rotations) {
+    if (!hasEnoughTimeBudget(budget, 8000)) {
+      break;
+    }
+
+    try {
+      const renderedPage = await renderPdfPageToImage(fileBuffer, {
+        pageNumber,
+        rotation,
+      });
+      console.info("[OCR] movement page render", {
+        fileName,
+        pageNumber,
+        rotation,
+        width: renderedPage.width,
+        height: renderedPage.height,
+        size: renderedPage.buffer.byteLength,
+      });
+      const { output, modelUsed } = await generateStructuredOutputAllowingEmptyRows({
+        apiKey,
+        budget,
+        experimentalModelName,
+        fallbackModelName,
+        modelName,
+        parts: [
+          createMovementVisualPagePrompt(clientProfile, pageNumber, rotation),
+          {
+            inlineData: {
+              mimeType: renderedPage.mimeType,
+              data: renderedPage.buffer.toString("base64"),
+            },
+          },
+        ],
+        timeoutMs: getMovementVisualPageTimeoutMs(),
+        context: {
+          stage: "direct-file-analysis",
+          documentType,
+          clientProfileId: clientProfile.id,
+          extractionProfile: clientProfile.defaultExtractionProfile,
+          model: modelName,
+          mimeType: renderedPage.mimeType,
+          fileName,
+          chunkIndex: pageNumber,
+          pageRange: String(pageNumber),
+        },
+      });
+      const normalized = normalizeVisionTableProfileOutput(output.columns, output.rows, clientProfile);
+      const filteredRows = filterVisionTableRows(normalized.csvRows, clientProfile);
+
+      if (filteredRows.length > 0 || rotation === rotations[rotations.length - 1]) {
+        return {
+          modelUsed,
+          output: {
+            columns: normalized.csvColumns,
+            rows: filteredRows,
+          },
+          warning:
+            rotation === 0
+              ? ""
+              : `Pagina ${pageNumber} procesada con rotacion alternativa ${rotation}.`,
+        };
+      }
+    } catch (error) {
+      lastError = error;
+      console.warn("[OCR] movement visual page attempt failed", {
+        fileName,
+        pageNumber,
+        rotation,
+        errorType: getSafeErrorCode(error),
+        technicalDetail: summarizeSafeError(error),
+      });
+    }
+  }
+
+  return {
+    modelUsed: modelName,
+    output: {
+      columns: [...(clientProfile.expectedColumns ?? [])],
+      rows: [],
+    },
+    warning: `Pagina ${pageNumber} sin filas validas. ${lastError ? summarizeSafeError(lastError) : ""}`.trim(),
+  };
+}
+
+function createMovementVisualPagePrompt(
+  clientProfile: ClientProfile,
+  pageNumber: number,
+  rotation: 0 | 90 | 180 | 270,
+) {
+  const expectedColumns = [...(clientProfile.expectedColumns ?? [])];
+
+  return `Actua como un sistema OCR visual tabular especializado en tablas escaneadas de movimientos logisticos.
+
+Vas a recibir una imagen renderizada de la pagina ${pageNumber} de un PDF escaneado. Rotacion aplicada: ${rotation} grados.
+
+Tu tarea es extraer exclusivamente filas reales de la tabla logistica.
+
+Respondé exclusivamente JSON valido con esta estructura:
+{
+  "mode": "table",
+  "columns": ["${expectedColumns.join('", "')}"],
+  "rows": []
+}
+
+Columnas exactas y orden obligatorio:
+${expectedColumns.join("\n")}
+
+Ignorar siempre:
+- CamScanner
+- Escaneado con CamScanner
+- URLs
+- sellos
+- folios
+- bordes
+- sombras
+- numeros de pagina
+- encabezados repetidos
+- texto fuera de la tabla
+
+Reglas:
+- No inventes datos.
+- Si una celda no es legible, usa "".
+- Fechas preferentemente DD/MM/YYYY.
+- Unifica fechas como DD/MM/YYYY solo cuando sea claro.
+- Mantene cada fila de la tabla como un registro.
+- No devuelvas Pagina, Linea, Texto, Campo, Valor, Contenido ni columnas auxiliares como salida principal.
+- Si la pagina no contiene filas validas de la tabla, devolve rows: [].
+- No uses markdown.
+- No uses HTML.
+- El primer caracter debe ser { y el ultimo debe ser }.`;
+}
+
+function mergeMovementVisualPageOutputs(
+  outputs: ParsedStructuredOutput[],
+  clientProfile: ClientProfile,
+) {
+  const columns = [...(clientProfile.expectedColumns ?? [])];
+  const rows: Record<string, string>[] = [];
+  const jsonRows: Record<string, string>[] = [];
+  const seen = new Set<string>();
+
+  for (const output of outputs) {
+    const normalized = normalizeVisionTableProfileOutput(output.columns, output.rows, clientProfile);
+    const filteredRows = filterVisionTableRows(normalized.csvRows, clientProfile);
+
+    for (const row of filteredRows) {
+      const signature = columns.map((column) => normalizeProfileCell(row[column])).join("|");
+
+      if (!signature || seen.has(signature)) continue;
+
+      seen.add(signature);
+      rows.push(row);
+      jsonRows.push({
+        ...row,
+        pageNumber: "",
+        rowNumber: String(jsonRows.length + 1),
+        confidence: "",
+        warnings: "",
+      });
+    }
+  }
+
+  return { columns, rows, jsonRows };
 }
 
 type PdfChunkOptions = {
@@ -966,6 +1547,66 @@ async function generateStructuredOutputWithResilience({
   throw lastError;
 }
 
+async function generateStructuredOutputAllowingEmptyRows({
+  apiKey,
+  budget,
+  experimentalModelName,
+  fallbackModelName,
+  modelName,
+  parts,
+  timeoutMs,
+  context,
+}: GenerateStructuredOutputOptions) {
+  if (shouldForceAiFailureForTest()) {
+    throw new StructuredOutputError(
+      STRUCTURED_OUTPUT_ERROR_MESSAGE,
+      "AI response could not be converted to structured output",
+      "AI_RESPONSE_NOT_JSON",
+    );
+  }
+
+  const modelAttempts = buildModelAttempts(modelName, fallbackModelName, experimentalModelName);
+  let lastError: unknown;
+
+  for (const attempt of modelAttempts) {
+    assertTimeBudget(context.stage, budget, 1000);
+
+    try {
+      const output = await generateStructuredOutputWithRetry({
+        apiKey,
+        budget,
+        modelName: attempt.modelName,
+        parts,
+        timeoutMs,
+        context: {
+          ...context,
+          model: attempt.modelName,
+        },
+      });
+
+      return {
+        output,
+        modelUsed: formatModelUsed(attempt),
+      };
+    } catch (error) {
+      lastError = error;
+
+      if (!isRecoverableAiCallError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  if (isRetryableGoogleAiError(lastError)) {
+    throw new GoogleAiTemporaryError(
+      "El modelo de IA estÃ¡ temporalmente saturado. IntentÃ¡ nuevamente en unos minutos.",
+      summarizeGoogleAiError(lastError),
+    );
+  }
+
+  throw lastError;
+}
+
 // Kept temporarily only as a rollback reference while validating the multi-model flow.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function generateStructuredOutputWithResilienceOld({
@@ -1265,6 +1906,17 @@ function getChunkCallTimeoutMs() {
   return readPositiveInteger(process.env.OCR_CHUNK_TIMEOUT_SECONDS, 45) * 1000;
 }
 
+function getMovementVisualPageTimeoutMs() {
+  return readPositiveInteger(
+    process.env.OCR_MOVEMENT_PAGE_TIMEOUT_SECONDS,
+    readPositiveInteger(process.env.OCR_CHUNK_TIMEOUT_SECONDS, 45),
+  ) * 1000;
+}
+
+function getMaxPdfPages() {
+  return readPositiveInteger(process.env.OCR_MAX_PDF_PAGES, 30);
+}
+
 function createTimeBudget(): OcrTimeBudget {
   return {
     startedAt: Date.now(),
@@ -1448,6 +2100,262 @@ function logLocalFallbackSkipped({
   });
 }
 
+function normalizeVisionTableProfileOutput(
+  columns: string[],
+  rows: Record<string, string>[],
+  clientProfile: ClientProfile,
+) {
+  const expectedColumns = [...(clientProfile.expectedColumns ?? [])];
+  const jsonMetaColumns = ["pageNumber", "rowNumber", "confidence", "warnings"];
+  const jsonColumns = [...expectedColumns, ...jsonMetaColumns];
+  const warnings: string[] = [];
+  const csvRows = rows.map((row) => {
+    const normalized: Record<string, string> = {};
+
+    for (const expectedColumn of expectedColumns) {
+      normalized[expectedColumn] = getProfileCellValue(row, expectedColumn, columns);
+    }
+
+    return normalized;
+  });
+  const jsonRows = rows.map((row, index) => {
+    const normalized: Record<string, string> = {};
+
+    for (const expectedColumn of expectedColumns) {
+      normalized[expectedColumn] = getProfileCellValue(row, expectedColumn, columns);
+    }
+
+    normalized.pageNumber = getProfileCellValue(row, "pageNumber", columns);
+    normalized.rowNumber = getProfileCellValue(row, "rowNumber", columns) || String(index + 1);
+    normalized.confidence = getProfileCellValue(row, "confidence", columns);
+    normalized.warnings = getProfileCellValue(row, "warnings", columns);
+
+    return normalized;
+  });
+
+  if (rows.length > 0 && columns.some((column) => normalizeProfileColumn(column) === "pagina")) {
+    warnings.push("La respuesta incluyo columnas genericas y fue normalizada al esquema del perfil.");
+  }
+
+  return {
+    csvColumns: expectedColumns,
+    csvRows,
+    jsonColumns,
+    jsonRows,
+    warnings,
+  };
+}
+
+function validateProfileResultOrThrow(result: CsvAnalysisResult, clientProfile: ClientProfile) {
+  if (!isVisionTableProfile(clientProfile)) return result;
+
+  const parsedColumns = getCsvHeaderColumnsFromContent(result.csvContent);
+  const parsedRows = parseCsvRowsFromContent(result.csvContent);
+
+  validateVisionTableProfileOutput({
+    columns: parsedColumns,
+    rows: parsedRows,
+    clientProfile,
+  });
+
+  return result;
+}
+
+function validateVisionTableProfileOutput({
+  columns,
+  rows,
+  clientProfile,
+}: {
+  columns: string[];
+  rows: Record<string, string>[];
+  clientProfile?: ClientProfile;
+}) {
+  const expectedColumns = [...(clientProfile?.validationRules?.requiredColumns ?? clientProfile?.expectedColumns ?? [])];
+  const normalizedColumns = columns.map(normalizeProfileColumn);
+  const genericColumns = ["pagina", "linea", "texto"];
+  const hasGenericLineCsv = genericColumns.every((column) => normalizedColumns.includes(column));
+  const missingColumns = expectedColumns.filter(
+    (column) => !normalizedColumns.includes(normalizeProfileColumn(column)),
+  );
+  const nonEmptyRows = rows.filter((row) =>
+    expectedColumns.some((column) => normalizeProfileCell(row[column]).length > 0),
+  );
+  const joinedValues = rows
+    .flatMap((row) => Object.values(row))
+    .map(normalizeProfileCell)
+    .join(" ");
+
+  if (hasGenericLineCsv) {
+    throw new ProfileExtractionValidationError(
+      "La extracción básica no es adecuada para este documento. Reprocesar con OCR visual de tablas usando el perfil ADALO-2026-MOVIMIENTO.",
+      "PROFILE_REJECTED_GENERIC_LINE_CSV",
+    );
+  }
+
+  if (missingColumns.length > 0) {
+    throw new ProfileExtractionValidationError(
+      "No se pudo reconstruir la tabla con las columnas esperadas del perfil.",
+      `PROFILE_MISSING_COLUMNS: ${missingColumns.join(", ")}`,
+    );
+  }
+
+  if (nonEmptyRows.length === 0) {
+    throw new ProfileExtractionValidationError(
+      "No se pudo reconstruir la tabla con al menos una fila válida.",
+      "PROFILE_NO_VALID_ROWS",
+    );
+  }
+
+  if (containsIgnoredProfileText(joinedValues, clientProfile)) {
+    throw new ProfileExtractionValidationError(
+      "No se pudo reconstruir una tabla confiable porque se detectó texto de escaneo como dato.",
+      "PROFILE_INCLUDED_IGNORED_TEXT",
+    );
+  }
+
+  if (looksCorruptedForProfile(joinedValues)) {
+    throw new ProfileExtractionValidationError(
+      "No se pudo reconstruir una tabla confiable porque el texto extraído contiene demasiados caracteres corruptos.",
+      "PROFILE_CORRUPTED_TEXT_DOMINANT",
+    );
+  }
+}
+
+function filterVisionTableRows(rows: Record<string, string>[], clientProfile: ClientProfile) {
+  const expectedColumns = [...(clientProfile.expectedColumns ?? [])];
+
+  return rows.filter((row) => {
+    const hasLogisticsData = expectedColumns.some((column) => normalizeProfileCell(row[column]).length > 0);
+    const joinedValues = expectedColumns.map((column) => normalizeProfileCell(row[column])).join(" ");
+
+    if (!hasLogisticsData) return false;
+    if (containsIgnoredProfileText(joinedValues, clientProfile)) return false;
+    if (looksCorruptedForProfile(joinedValues)) return false;
+    if (looksLikeHeaderOnlyRow(row, expectedColumns)) return false;
+
+    return true;
+  });
+}
+
+function looksLikeHeaderOnlyRow(row: Record<string, string>, expectedColumns: string[]) {
+  const matches = expectedColumns.filter((column) => {
+    const value = normalizeProfileColumn(row[column] ?? "");
+    return value && value === normalizeProfileColumn(column);
+  }).length;
+
+  return matches >= Math.max(3, Math.floor(expectedColumns.length / 2));
+}
+
+function createVisionTableProfileFailure(error: unknown) {
+  if (error instanceof ProfileExtractionValidationError) return error;
+
+  return new ProfileExtractionValidationError(
+    "La extracción básica no es adecuada para este documento. Reprocesar con OCR visual de tablas usando el perfil ADALO-2026-MOVIMIENTO.",
+    summarizeSafeError(error),
+  );
+}
+
+function getProfileCellValue(row: Record<string, string>, expectedColumn: string, columns: string[]) {
+  const expectedKey = normalizeProfileColumn(expectedColumn);
+  const sourceColumn =
+    columns.find((column) => normalizeProfileColumn(column) === expectedKey) ??
+    columns.find((column) => normalizeProfileColumn(column).includes(expectedKey));
+
+  return normalizeProfileCell(sourceColumn ? row[sourceColumn] : row[expectedColumn]);
+}
+
+function getCsvHeaderColumnsFromContent(csvContent: string) {
+  return csvContent
+    .replace(/^\uFEFF/, "")
+    .split(/\r?\n/)[0]
+    ?.split(",")
+    .map((column) => column.replace(/^"|"$/g, "").replace(/""/g, '"').trim())
+    .filter(Boolean) ?? [];
+}
+
+function parseCsvRowsFromContent(csvContent: string) {
+  const lines = csvContent
+    .replace(/^\uFEFF/, "")
+    .split(/\r?\n/)
+    .filter(Boolean);
+  const columns = getCsvHeaderColumnsFromContent(csvContent);
+
+  return lines.slice(1).map((line) => {
+    const cells = parseSimpleCsvLine(line);
+    return Object.fromEntries(columns.map((column, index) => [column, cells[index] ?? ""]));
+  });
+}
+
+function parseSimpleCsvLine(line: string) {
+  const cells: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    const next = line[index + 1];
+
+    if (char === '"' && inQuotes && next === '"') {
+      current += '"';
+      index += 1;
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if (char === "," && !inQuotes) {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  cells.push(current.trim());
+  return cells;
+}
+
+function containsIgnoredProfileText(value: string, clientProfile?: ClientProfile) {
+  const normalizedValue = normalizeProfileSearchValue(value);
+  return (clientProfile?.ignoreText ?? []).some((text) =>
+    normalizedValue.includes(normalizeProfileSearchValue(text)),
+  );
+}
+
+function looksCorruptedForProfile(value: string) {
+  if (!value.trim()) return false;
+
+  const lowerValue = value.toLowerCase();
+  const urlPenalty = lowerValue.includes("http://") || lowerValue.includes("https://") ? 20 : 0;
+  const suspiciousLength =
+    [...value].filter((char) => {
+      const code = char.charCodeAt(0);
+      return char === "�" || char === "Â" || char === "Ã" || code < 32 || code === 127;
+    }).length + urlPenalty;
+
+  return suspiciousLength / Math.max(value.length, 1) > 0.03;
+}
+
+function normalizeProfileColumn(value: string) {
+  return normalizeProfileSearchValue(value).replace(/[^a-z0-9]+/g, "");
+}
+
+function normalizeProfileSearchValue(value: string) {
+  return normalizeProfileCell(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function normalizeProfileCell(value: unknown) {
+  if (value === null || value === undefined) return "";
+  return String(value).replace(/\r?\n/g, " ").replace(/\s+/g, " ").trim();
+}
+
 function returnLocalPdfFallbackIfAvailable({
   fileName,
   pages,
@@ -1522,8 +2430,10 @@ function getSafeErrorCode(error: unknown) {
   if (error instanceof GoogleAiTemporaryError) return "GOOGLE_AI_TEMPORARY_ERROR";
   if (error instanceof CsvAnalysisError) return error.technicalDetail;
   if (error instanceof AiOutputQualityError) return "AI_OUTPUT_QUALITY_LOW";
+  if (error instanceof ProfileExtractionValidationError) return "PROFILE_EXTRACTION_VALIDATION_ERROR";
   if (error instanceof PdfChunkingError) return "PDF_CHUNKING_ERROR";
   if (error instanceof OcrTimeBudgetError) return "OCR_TIME_BUDGET_EXCEEDED";
+  if (error instanceof PdfPageRenderError) return "PDF_PAGE_RENDER_ERROR";
   if (error instanceof Error) return error.name;
   return "UNKNOWN_ERROR";
 }
@@ -1547,6 +2457,10 @@ function shouldAttemptRepairPass(error: unknown) {
 
 function truncateForRepair(value: string) {
   return value.replace(/\0/g, "").slice(0, 12000);
+}
+
+function truncateAdvancedOcrText(value: string) {
+  return value.replace(/\0/g, "").trim().slice(0, 60000);
 }
 
 function looksLikeKnownSimpleTable(pages: Array<{ pageNumber: number; text: string }>) {
@@ -1648,6 +2562,10 @@ function summarizeSafeError(error: unknown) {
   }
 
   if (error instanceof AiOutputQualityError) {
+    return error.technicalDetail;
+  }
+
+  if (error instanceof ProfileExtractionValidationError) {
     return error.technicalDetail;
   }
 

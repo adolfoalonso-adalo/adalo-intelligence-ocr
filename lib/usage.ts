@@ -22,6 +22,10 @@ export type UsageCheckResult =
   | { allowed: false; message: string; status: number; context: OcrPlanContext | null };
 
 export async function getOcrUsageContext(payload: AccessSessionPayload | null): Promise<UsageCheckResult> {
+  if (payload?.accessMode === "master" || payload?.isInternalTest) {
+    return { allowed: true, context: null };
+  }
+
   if (!payload?.accessCodeId) {
     return { allowed: true, context: null };
   }
@@ -121,10 +125,41 @@ export async function recordUsageEvent(input: {
   outputCsvFileName?: string;
   outputJsonFileName?: string;
   records?: number;
+  isInternalTest?: boolean;
   status: "success" | "error";
 }) {
   const prisma = getPrismaClient();
-  if (!prisma || !input.context) return;
+  if (!prisma) return;
+
+  if (!input.context && input.isInternalTest) {
+    await prisma.usageEvent
+      .create({
+        data: {
+          durationMs: input.durationMs,
+          errorType: input.errorType,
+          estimatedDocumentType: input.estimatedDocumentType,
+          extractionKind: input.extractionKind ? `internal-test:${input.extractionKind}` : "internal-test",
+          fields: input.fields,
+          fileMimeType: input.fileMimeType,
+          fileSizeBytes: input.fileSizeBytes,
+          modelLabel: "Motor ADALO",
+          originalFileName: input.originalFileName,
+          outputCsvFileName: input.outputCsvFileName,
+          outputJsonFileName: input.outputJsonFileName,
+          records: input.records,
+          status: input.status,
+        },
+      })
+      .catch((error) => {
+        console.warn("[OCR] internal usage event registration failed", {
+          errorName: error instanceof Error ? error.name : typeof error,
+          errorMessage: error instanceof Error ? error.message : String(error ?? ""),
+        });
+      });
+    return;
+  }
+
+  if (!input.context) return;
 
   await prisma.usageEvent
     .create({

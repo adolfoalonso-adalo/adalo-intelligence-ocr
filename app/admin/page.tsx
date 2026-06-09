@@ -152,6 +152,30 @@ export default async function AdminPage() {
         </section>
 
         <section className="rounded-2xl border border-brand-border bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-brand-accent">
+                Codigo maestro de prueba
+              </p>
+              <h2 className="mt-2 text-lg font-semibold text-brand-deep">
+                {isMasterAccessCodeConfigured() ? "Configurado" : "No configurado"}
+              </h2>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-brand-slate">
+                El codigo maestro permite realizar pruebas internas del OCR sin asociarlas a un plan comercial.
+                No debe compartirse con clientes.
+              </p>
+            </div>
+            <div className="rounded-xl border border-brand-border bg-brand-cream p-4 text-xs leading-5 text-brand-slate">
+              <p className="font-semibold text-brand-deep">Generar hash local:</p>
+              <code className="mt-1 block break-all">
+                corepack pnpm hash:access-code &quot;ADALO-ADMIN-2026-TEST-XXXX&quot;
+              </code>
+              <p className="mt-2">Configurar el resultado en MASTER_ACCESS_CODE_HASH.</p>
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-brand-border bg-white p-5 shadow-sm">
           <h2 className="text-lg font-semibold text-brand-deep">Crear cliente</h2>
           <form action={createClientAction} className="mt-4 grid gap-3 md:grid-cols-3">
             <Input name="name" placeholder="Nombre comercial" required />
@@ -162,6 +186,7 @@ export default async function AdminPage() {
             <select name="profileId" className={fieldClassName}>
               <option value="general">general</option>
               <option value="mateo">mateo</option>
+              <option value="movimiento">movimiento</option>
               <option value="custom">custom</option>
             </select>
             <select name="planId" className={fieldClassName}>
@@ -223,6 +248,7 @@ export default async function AdminPage() {
                             <select name="profileId" defaultValue={client.profileId} className={fieldClassName}>
                               <option value="general">general</option>
                               <option value="mateo">mateo</option>
+                              <option value="movimiento">movimiento</option>
                               <option value="custom">custom</option>
                             </select>
                             <select name="planId" defaultValue={client.planId ?? ""} className={fieldClassName}>
@@ -408,4 +434,8 @@ function startOfMonth() {
   date.setDate(1);
   date.setHours(0, 0, 0, 0);
   return date;
+}
+
+function isMasterAccessCodeConfigured() {
+  return Boolean(process.env.MASTER_ACCESS_CODE_HASH?.trim());
 }

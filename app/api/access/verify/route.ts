@@ -4,7 +4,9 @@ import {
   getAccessCookieMaxAgeSeconds,
   getAccessCookieName,
   getAccessRateLimitConfig,
+  isReservedProfileAccessCode,
   verifyAccessCode,
+  verifyMasterAccessCode,
 } from "@/lib/access-code";
 import { validateAccessCodeFromDatabase } from "@/lib/access-code-db";
 import {
@@ -58,13 +60,24 @@ export async function POST(request: Request) {
 
     const body = (await request.json().catch(() => null)) as { code?: unknown } | null;
     const code = typeof body?.code === "string" ? body.code : "";
+    const isReservedProfileCode = code ? isReservedProfileAccessCode(code) : false;
 
-    const dbValidation = code ? await validateAccessCodeFromDatabase(code) : null;
+    const dbValidation = code && !isReservedProfileCode ? await validateAccessCodeFromDatabase(code) : null;
     const isValidDbCode = dbValidation?.source === "db" && dbValidation.valid;
     const isInvalidKnownDbCode = dbValidation?.source === "db" && !dbValidation.valid;
-    const isValidLegacyCode = dbValidation?.source !== "db" && Boolean(code && verifyAccessCode(code));
+    const isValidMasterCode =
+      !isValidDbCode && !isInvalidKnownDbCode && Boolean(code && verifyMasterAccessCode(code));
+    const isAllowedMasterUser =
+      !isValidMasterCode || isMasterAccessEmailAllowed(session.user.email ?? "");
+    const isValidLegacyCode =
+      !isValidMasterCode && dbValidation?.source !== "db" && Boolean(code && verifyAccessCode(code));
 
-    if (!code || isInvalidKnownDbCode || (!isValidDbCode && !isValidLegacyCode)) {
+    if (
+      !code ||
+      isInvalidKnownDbCode ||
+      !isAllowedMasterUser ||
+      (!isValidDbCode && !isValidMasterCode && !isValidLegacyCode)
+    ) {
       return jsonResponse(
         {
           success: false,
@@ -80,7 +93,9 @@ export async function POST(request: Request) {
 
     const clientProfile = isValidDbCode
       ? { id: dbValidation.clientProfileId }
-      : resolveClientProfileForAccessCode(code);
+      : isValidMasterCode
+        ? { id: "general" }
+        : resolveClientProfileForAccessCode(code);
     const response = jsonResponse({ success: true }, 200, rateLimit);
     response.cookies.set(getAccessCookieName(), createAccessCookie(), {
       httpOnly: true,
@@ -100,8 +115,11 @@ export async function POST(request: Request) {
       getAccessSessionCookieName(),
       createAccessSessionCookie({
         accessCodeId: isValidDbCode ? dbValidation.accessCodeId : undefined,
+        accessMode: isValidDbCode ? "client" : isValidMasterCode ? "master" : "legacy",
+        allowProfileTesting: isValidMasterCode,
         clientId: isValidDbCode ? dbValidation.clientId : undefined,
         clientProfileId: clientProfile.id,
+        isInternalTest: isValidMasterCode,
         planId: isValidDbCode ? dbValidation.planId : undefined,
       }),
       {
@@ -142,4 +160,26 @@ function jsonResponse(body: Record<string, unknown>, status: number, rateLimit: 
     status,
     headers: createRateLimitHeaders(rateLimit),
   });
+}
+
+function isMasterAccessEmailAllowed(email: string) {
+  const normalizedEmail = normalizeEmail(email);
+  const masterEmail = normalizeEmail(process.env.MASTER_ACCESS_EMAIL || "");
+  const adminEmails = (process.env.ADMIN_EMAILS || "")
+    .split(",")
+    .map(normalizeEmail)
+    .filter(Boolean);
+
+  if (masterEmail) return normalizedEmail === masterEmail;
+  return adminEmails.includes(normalizedEmail);
+}
+
+function normalizeEmail(value: string) {
+  const emailMatch = value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+
+  return (emailMatch?.[0] || value)
+    .replace(/^mailto:/i, "")
+    .replace(/^\[|\]$/g, "")
+    .trim()
+    .toLowerCase();
 }
