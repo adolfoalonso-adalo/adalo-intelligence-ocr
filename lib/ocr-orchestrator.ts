@@ -7,6 +7,10 @@ import { analyzeDocumentForOcr } from "@/lib/document-preprocessing";
 import type { DocumentType } from "@/lib/document-type";
 import { CsvAnalysisError, type CsvAnalysisResult } from "@/lib/google-ai";
 import {
+  OCRTextOnlyError,
+  withOCRTextOnlyContext,
+} from "@/lib/ocr-diagnostics";
+import {
   assessOCRQuality,
   logOCRQualityAssessment,
   type OCRQualityAssessment,
@@ -48,6 +52,7 @@ export async function runOcrExtraction(input: {
   const fallbackEnabled = readBoolean(process.env.OCR_ENABLE_FALLBACK, true);
   const primaryProvider = createOCRProvider(primaryProviderName);
   const fallbackProvider = createOCRProvider(fallbackProviderName);
+  let advancedTextOnlyError: OCRTextOnlyError | null = null;
   const preprocessing = await analyzeDocumentForOcr({
     fileBuffer: input.fileBuffer,
     fileName: input.fileName,
@@ -97,6 +102,14 @@ export async function runOcrExtraction(input: {
         primaryProviderName: primaryProvider.name,
       });
     } catch (advancedError) {
+      if (advancedError instanceof OCRTextOnlyError) {
+        advancedTextOnlyError = withOCRTextOnlyContext(advancedError, {
+          fallbackUsed: true,
+          profileUsed: getClientProfileCode(input.clientProfile),
+          providerUsed: fallbackProvider.name,
+        });
+      }
+
       console.warn("[OCR] advanced provider failed for scanned PDF; trying primary provider", {
         fileName: input.fileName,
         provider: fallbackProvider.name,
@@ -131,6 +144,39 @@ export async function runOcrExtraction(input: {
           : "Unknown primary provider error",
     });
 
+    if (advancedTextOnlyError) {
+      throw advancedTextOnlyError;
+    }
+
+    if (primaryError instanceof OCRTextOnlyError) {
+      const primaryTextOnlyError = withOCRTextOnlyContext(primaryError, {
+        fallbackUsed: false,
+        profileUsed: getClientProfileCode(input.clientProfile),
+        providerUsed: primaryProvider.name,
+      });
+
+      if (fallbackEnabled && fallbackProvider.name !== primaryProvider.name) {
+        try {
+          return await runFallbackProviderOrThrow({
+            fallbackProvider,
+            input,
+            pagesProcessed: preprocessing.pagesProcessed,
+            preprocessing,
+            primaryError,
+            primaryProviderName: primaryProvider.name,
+          });
+        } catch (fallbackError) {
+          if (fallbackError instanceof OCRTextOnlyError) {
+            throw fallbackError;
+          }
+
+          throw primaryTextOnlyError;
+        }
+      }
+
+      throw primaryTextOnlyError;
+    }
+
     if (fallbackEnabled && fallbackProvider.name !== primaryProvider.name) {
       return runFallbackProviderOrThrow({
         fallbackProvider,
@@ -161,6 +207,10 @@ export async function runOcrExtraction(input: {
       primaryProvider: primaryProvider.name,
       profile: input.clientProfile,
     });
+  }
+
+  if (advancedTextOnlyError) {
+    throw advancedTextOnlyError;
   }
 
   if (
@@ -283,10 +333,24 @@ async function runFallbackProviderOrThrow({
   primaryError: unknown;
   primaryProviderName: OCRProviderName;
 }) {
-  const fallbackResult = await fallbackProvider.extract({
-    ...input,
-    preprocessing,
-  });
+  let fallbackResult: OCRProviderResult;
+
+  try {
+    fallbackResult = await fallbackProvider.extract({
+      ...input,
+      preprocessing,
+    });
+  } catch (error) {
+    if (error instanceof OCRTextOnlyError) {
+      throw withOCRTextOnlyContext(error, {
+        fallbackUsed: fallbackProvider.name !== primaryProviderName,
+        profileUsed: getClientProfileCode(input.clientProfile),
+        providerUsed: fallbackProvider.name,
+      });
+    }
+
+    throw error;
+  }
   const fallbackAssessment = assessOCRQuality(fallbackResult, input.clientProfile, preprocessing);
   logOCRQualityAssessment({
     assessment: fallbackAssessment,
@@ -302,6 +366,25 @@ async function runFallbackProviderOrThrow({
       pagesProcessed,
       primaryProvider: primaryProviderName,
       profile: input.clientProfile,
+    });
+  }
+
+  if (fallbackResult.rawTextContent) {
+    throw new OCRTextOnlyError({
+      canDownloadRawText: true,
+      extractionMode: "ocr_text_only",
+      fallbackUsed: fallbackProvider.name !== primaryProviderName,
+      pagesProcessed: fallbackResult.pagesProcessed ?? pagesProcessed,
+      profileUsed: getClientProfileCode(input.clientProfile),
+      providerUsed: fallbackProvider.name,
+      qualityScore: fallbackAssessment.confidence,
+      qualityStatus: fallbackAssessment.requiresManualReview
+        ? "manual_review_required"
+        : "failed_quality_gate",
+      rawTextContent: fallbackResult.rawTextContent,
+      reason: fallbackAssessment.reason,
+      textLength: fallbackResult.textLength ?? fallbackResult.rawTextContent.length,
+      warnings: fallbackAssessment.warnings,
     });
   }
 

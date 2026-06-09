@@ -234,6 +234,15 @@ Reglas generales:
 - Si un dato no aparece o es ilegible, usa "".
 - No devuelvas Pagina/Linea/Texto como estructura final.
 - Si hay tablas, prioriza filas y columnas reales de tabla.
+- En tablas multipagina, conserva el mismo esquema entre paginas y concatena todos los registros.
+- Trata encabezados repetidos al inicio de cada pagina como encabezados, no como filas de datos.
+- No mezcles celdas de filas distintas aunque el OCR haya perdido bordes o separadores.
+- Usa la posicion y el orden del texto OCR para reconstruir columnas cuando una tabla escaneada llegue fragmentada.
+- En formularios administrativos, consolida los pares campo/valor de una misma operacion en una fila cuando corresponda.
+- En listados administrativos, genera una fila por registro y conserva identificadores, fechas, CUIT, expedientes y codigos como texto.
+- Ignora encabezados de pagina, pies, folios, sellos, firmas, marcas de agua, URLs y textos de escaner que no pertenezcan a los datos.
+- Si una celda no puede asociarse con confianza a una columna, dejala vacia; no desplaces el resto de la fila.
+- Revisa la salida completa antes de responder: las columnas deben ser consistentes y cada row debe usar exactamente esas claves.
 - El servidor va a generar el CSV final; no devuelvas CSV directo.
 
 Si el perfil es Movimiento, usa exactamente estas columnas y este orden:

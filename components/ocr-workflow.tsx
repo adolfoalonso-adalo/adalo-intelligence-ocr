@@ -5,6 +5,7 @@ import { useState } from "react";
 import { CsvResultsPreview } from "@/components/csv-results-preview";
 import { DownloadCsvButton } from "@/components/download-csv-button";
 import { DownloadJsonButton } from "@/components/download-json-button";
+import { DownloadRawTextButton } from "@/components/download-raw-text-button";
 import { PdfDropzone } from "@/components/pdf-dropzone";
 import { ProcessingStatus } from "@/components/processing-status";
 import { Spinner } from "@/components/spinner";
@@ -38,7 +39,34 @@ type ProcessResponse = {
   resultQuality?: ResultQuality;
   durationMs?: number;
   error?: string;
+  message?: string;
   technicalDetail?: string;
+  providerUsed?: string;
+  fallbackUsed?: boolean;
+  profileUsed?: string;
+  pagesProcessed?: number;
+  textLength?: number;
+  qualityScore?: number;
+  qualityStatus?: string;
+  reason?: string;
+  warnings?: string[];
+  canDownloadRawText?: boolean;
+  rawTextContent?: string;
+  rawTextFileName?: string;
+};
+
+export type OcrTextOnlyDiagnostic = {
+  providerUsed?: string;
+  fallbackUsed?: boolean;
+  profileUsed?: string;
+  pagesProcessed?: number;
+  textLength?: number;
+  qualityScore?: number;
+  qualityStatus?: string;
+  reason?: string;
+  warnings?: string[];
+  rawTextContent?: string;
+  rawTextFileName?: string;
 };
 
 type TestProfileId = "general" | "mateo" | "movimiento" | "technical-admin";
@@ -56,6 +84,8 @@ export function OcrWorkflow({
   const [status, setStatus] = useState<OcrStatus>("idle");
   const [error, setError] = useState<string>("");
   const [technicalDetail, setTechnicalDetail] = useState<string>("");
+  const [textOnlyDiagnostic, setTextOnlyDiagnostic] =
+    useState<OcrTextOnlyDiagnostic | null>(null);
   const [testProfileId, setTestProfileId] = useState<TestProfileId>("general");
   const [uploadProgress, setUploadProgress] = useState(0);
   const [result, setResult] = useState<{
@@ -79,6 +109,7 @@ export function OcrWorkflow({
     setResult(null);
     setError("");
     setTechnicalDetail("");
+    setTextOnlyDiagnostic(null);
     setUploadProgress(0);
     setStatus("validating");
 
@@ -93,6 +124,7 @@ export function OcrWorkflow({
     setResult(null);
     setError(message);
     setTechnicalDetail("");
+    setTextOnlyDiagnostic(null);
     setStatus("error");
   }
 
@@ -101,6 +133,7 @@ export function OcrWorkflow({
     setResult(null);
     setError("");
     setTechnicalDetail("");
+    setTextOnlyDiagnostic(null);
     setUploadProgress(0);
     setStatus("idle");
   }
@@ -111,6 +144,7 @@ export function OcrWorkflow({
     setStatus("uploading");
     setError("");
     setTechnicalDetail("");
+    setTextOnlyDiagnostic(null);
     setResult(null);
     setUploadProgress(0);
 
@@ -180,6 +214,29 @@ export function OcrWorkflow({
         "POST",
         "/api/ocr/process",
       );
+
+      if (
+        data.extractionMode === "ocr_text_only" &&
+        data.success === false
+      ) {
+        setTextOnlyDiagnostic({
+          providerUsed: data.providerUsed,
+          fallbackUsed: data.fallbackUsed,
+          profileUsed: data.profileUsed,
+          pagesProcessed: data.pagesProcessed,
+          textLength: data.textLength,
+          qualityScore: data.qualityScore,
+          qualityStatus: data.qualityStatus,
+          reason: data.reason,
+          warnings: data.warnings,
+          rawTextContent: data.rawTextContent,
+          rawTextFileName: data.rawTextFileName,
+        });
+        setError(data.error || "No pudimos estructurar el archivo");
+        setTechnicalDetail(data.technicalDetail || "");
+        setStatus("error");
+        return;
+      }
 
       if (!response.ok || !data.success || !data.csvContent || !data.fileName) {
         const processingError = new Error(data.error || "No pudimos procesar el archivo");
@@ -276,6 +333,7 @@ export function OcrWorkflow({
         }
         resultQuality={status === "done" ? result?.resultQuality : undefined}
         technicalDetail={status === "error" ? technicalDetail : ""}
+        diagnostic={status === "error" ? textOnlyDiagnostic : null}
       />
 
       {result && status === "done" && result.profileCode && result.profileCode !== "general" ? (
@@ -308,6 +366,15 @@ export function OcrWorkflow({
           >
             {file ? "Cambiar archivo" : "Seleccionar archivo"}
           </button>
+        ) : null}
+
+        {status === "error" &&
+        textOnlyDiagnostic?.rawTextContent &&
+        textOnlyDiagnostic.rawTextFileName ? (
+          <DownloadRawTextButton
+            fileName={textOnlyDiagnostic.rawTextFileName}
+            textContent={textOnlyDiagnostic.rawTextContent}
+          />
         ) : null}
 
         {status !== "done" ? (

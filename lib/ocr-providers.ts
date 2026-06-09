@@ -12,6 +12,10 @@ import {
   formatCorrectionExamplesForPrompt,
   getProfileCorrectionExamples,
 } from "@/lib/profile-correction-examples";
+import {
+  OCRTextOnlyError,
+  sanitizeRawOcrText,
+} from "@/lib/ocr-diagnostics";
 
 export type OCRProviderName = "google-ai" | "advanced-document" | "google-document-ai";
 
@@ -26,6 +30,8 @@ export type OCRProviderInput = {
 
 export type OCRProviderResult = CsvAnalysisResult & {
   providerUsed: OCRProviderName;
+  rawTextContent?: string;
+  textLength?: number;
 };
 
 export interface OCRProvider {
@@ -207,27 +213,66 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
       );
     }
 
+    const rawTextContent = sanitizeRawOcrText(document.text);
     const tablesText = extractDocumentAiTablesText(document);
     const clientProfile = await withCorrectionExamples(input.clientProfile);
-    const normalized = await analyzeExtractedDocumentToCsv({
-      clientProfile,
-      documentType: input.documentType,
-      extractedTablesText: tablesText,
-      extractedText: document.text,
-      fileName: input.fileName,
-      pageCount: document.pages?.length,
-      providerLabel: "google-document-ai",
-    });
+    let normalized: CsvAnalysisResult;
+
+    try {
+      normalized = await analyzeExtractedDocumentToCsv({
+        clientProfile,
+        documentType: input.documentType,
+        extractedTablesText: tablesText,
+        extractedText: rawTextContent,
+        fileName: input.fileName,
+        pageCount: document.pages?.length,
+        providerLabel: "google-document-ai",
+      });
+    } catch (error) {
+      throw new OCRTextOnlyError({
+        canDownloadRawText: true,
+        extractionMode: "ocr_text_only",
+        fallbackUsed: false,
+        pagesProcessed: document.pages?.length ?? 0,
+        profileUsed: getClientProfileCode(input.clientProfile),
+        providerUsed: this.name,
+        qualityScore: 0.5,
+        qualityStatus: "failed_quality_gate",
+        rawTextContent,
+        reason: getSafeNormalizationFailureReason(error),
+        textLength: rawTextContent.length,
+        warnings: [
+          ...(tablesText ? [] : ["Google Document AI no detecto tablas explicitas."]),
+          "El texto OCR fue recuperado, pero no pudo normalizarse como una tabla confiable.",
+        ],
+      });
+    }
 
     return {
       ...normalized,
       providerUsed: this.name,
+      rawTextContent,
+      textLength: rawTextContent.length,
       warnings: [
         ...(normalized.warnings ?? []),
         ...(tablesText ? [] : ["Google Document AI no detecto tablas explicitas; se normalizo desde texto OCR."]),
       ],
     };
   }
+}
+
+function getSafeNormalizationFailureReason(error: unknown) {
+  if (error instanceof CsvAnalysisError) {
+    return error.technicalDetail.replace(/\s+/g, " ").slice(0, 220);
+  }
+
+  if (error instanceof Error) {
+    return error.name === "AiOutputQualityError"
+      ? "La salida normalizada no alcanzo el umbral minimo de calidad."
+      : "La respuesta de normalizacion no pudo convertirse en una estructura confiable.";
+  }
+
+  return "La salida OCR no pudo convertirse en una estructura confiable.";
 }
 
 export function createOCRProvider(name: string | undefined): OCRProvider {

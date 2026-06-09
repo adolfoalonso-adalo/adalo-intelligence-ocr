@@ -1,4 +1,7 @@
-import type { OcrStatus } from "@/components/ocr-workflow";
+import type {
+  OcrStatus,
+  OcrTextOnlyDiagnostic,
+} from "@/components/ocr-workflow";
 import { Spinner } from "@/components/spinner";
 
 const statusCopy: Record<OcrStatus, string> = {
@@ -18,6 +21,7 @@ type ProcessingStatusProps = {
   details?: string;
   resultQuality?: ResultQuality;
   technicalDetail?: string;
+  diagnostic?: OcrTextOnlyDiagnostic | null;
 };
 
 export function ProcessingStatus({
@@ -25,6 +29,7 @@ export function ProcessingStatus({
   details,
   resultQuality,
   technicalDetail,
+  diagnostic,
 }: ProcessingStatusProps) {
   const isError = status === "error";
   const isDone = status === "done";
@@ -52,6 +57,57 @@ export function ProcessingStatus({
       {technicalDetail ? (
         <p className="mt-2 rounded-xl bg-white/60 px-3 py-2 text-xs opacity-90">
           <span className="font-semibold">Detalle tecnico:</span> {technicalDetail}
+        </p>
+      ) : null}
+      {diagnostic ? <OcrDiagnosticDetails diagnostic={diagnostic} /> : null}
+    </div>
+  );
+}
+
+function OcrDiagnosticDetails({
+  diagnostic,
+}: {
+  diagnostic: OcrTextOnlyDiagnostic;
+}) {
+  const items = [
+    ["Proveedor", diagnostic.providerUsed],
+    ["Perfil", diagnostic.profileUsed],
+    [
+      "Paginas procesadas",
+      typeof diagnostic.pagesProcessed === "number"
+        ? String(diagnostic.pagesProcessed)
+        : undefined,
+    ],
+    [
+      "Texto recuperado",
+      typeof diagnostic.textLength === "number"
+        ? `${diagnostic.textLength.toLocaleString("es-AR")} caracteres`
+        : undefined,
+    ],
+    [
+      "Puntaje de calidad",
+      typeof diagnostic.qualityScore === "number"
+        ? `${Math.round(diagnostic.qualityScore * 100)}%`
+        : undefined,
+    ],
+    ["Fallback avanzado", diagnostic.fallbackUsed ? "Si" : "No"],
+    ["Motivo", diagnostic.reason],
+  ].filter((item): item is [string, string] => Boolean(item[1]));
+
+  return (
+    <div className="mt-3 rounded-xl border border-red-100 bg-white/70 px-3 py-3 text-xs">
+      <p className="font-semibold text-red-800">Diagnostico</p>
+      <dl className="mt-2 grid gap-2 sm:grid-cols-2">
+        {items.map(([label, value]) => (
+          <div key={label}>
+            <dt className="font-semibold text-red-700">{label}</dt>
+            <dd className="mt-0.5 break-words text-red-700/90">{value}</dd>
+          </div>
+        ))}
+      </dl>
+      {diagnostic.warnings?.length ? (
+        <p className="mt-3 border-t border-red-100 pt-2 text-red-700/90">
+          {diagnostic.warnings.join(" ")}
         </p>
       ) : null}
     </div>

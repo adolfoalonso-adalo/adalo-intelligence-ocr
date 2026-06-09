@@ -34,6 +34,7 @@ import {
   isOwnedOcrBlobPathname,
   normalizeOcrBlobContentType,
 } from "@/lib/ocr-blob";
+import { OCRTextOnlyError } from "@/lib/ocr-diagnostics";
 import { runOcrExtraction } from "@/lib/ocr-orchestrator";
 import type { OCRQualityStatus } from "@/lib/ocr-quality";
 import {
@@ -470,6 +471,10 @@ export async function POST(request: Request) {
     } catch (analysisError) {
       console.warn("[OCR API] OCR orchestrator failed", getSafeErrorLog(analysisError));
 
+      if (analysisError instanceof OCRTextOnlyError) {
+        throw analysisError;
+      }
+
       if (mimeType === "application/pdf" && !isVisionTableProfile(clientProfile)) {
         try {
           const fallbackStartedAt = Date.now();
@@ -526,6 +531,68 @@ export async function POST(request: Request) {
       throw analysisError;
     }
   } catch (error) {
+    if (error instanceof OCRTextOnlyError) {
+      const diagnostic = error.diagnostic;
+      const durationMs = Date.now() - startedAt;
+
+      console.warn("[OCR API] OCR text-only quality response", {
+        providerUsed: diagnostic.providerUsed,
+        pagesProcessed: diagnostic.pagesProcessed,
+        textLength: diagnostic.textLength,
+        qualityScore: diagnostic.qualityScore,
+        failedReason: diagnostic.reason,
+        profileUsed: diagnostic.profileUsed,
+        fallbackUsed: diagnostic.fallbackUsed,
+      });
+
+      logApiTiming("total", startedAt, {
+        fileName: originalFileName,
+        strategy: "ocr-text-only",
+      });
+
+      await recordUsageEvent({
+        context: usageContext,
+        durationMs,
+        errorType: "ocr_text_only",
+        estimatedDocumentType,
+        fileMimeType: originalMimeType,
+        fileSizeBytes: originalFileSize,
+        isInternalTest: accessSessionForUsage?.isInternalTest,
+        originalFileName,
+        status: "error",
+      });
+
+      return NextResponse.json(
+        {
+          success: false,
+          error: "No pudimos estructurar el archivo",
+          message:
+            "El documento fue leído parcialmente, pero no se obtuvo una tabla confiable.",
+          extractionMode: diagnostic.extractionMode,
+          providerUsed: diagnostic.providerUsed,
+          fallbackUsed: diagnostic.fallbackUsed,
+          profileUsed: diagnostic.profileUsed,
+          pagesProcessed: diagnostic.pagesProcessed,
+          textLength: diagnostic.textLength,
+          qualityScore: diagnostic.qualityScore,
+          qualityStatus: diagnostic.qualityStatus,
+          reason: diagnostic.reason,
+          warnings: diagnostic.warnings,
+          canDownloadRawText: diagnostic.canDownloadRawText,
+          rawTextContent: diagnostic.rawTextContent,
+          rawTextFileName: createRawTextFileName(originalFileName),
+          durationMs,
+          ...(process.env.NODE_ENV !== "production"
+            ? {
+                technicalDetail:
+                  "OCR text extracted; structured output did not pass the quality threshold.",
+              }
+            : {}),
+        },
+        { status: 422 },
+      );
+    }
+
     const safeError = toSafeUserError(error);
 
     console.warn("[OCR API] API error response", {
@@ -637,6 +704,14 @@ function sanitizeOriginalFileName(value: string) {
     .slice(0, 180);
 
   return sanitized || "documento";
+}
+
+function createRawTextFileName(originalFileName: string) {
+  const baseName = sanitizeOriginalFileName(originalFileName)
+    .replace(/\.[^.]+$/i, "")
+    .trim();
+
+  return `${baseName || "documento"}_ocr_bruto.txt`;
 }
 
 const methodNotAllowed = () =>
