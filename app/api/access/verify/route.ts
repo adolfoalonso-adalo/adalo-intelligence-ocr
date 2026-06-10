@@ -113,11 +113,20 @@ export async function POST(request: Request) {
       createAccessSessionCookie({
         accessCodeId: isValidDbCode ? dbValidation.accessCodeId : undefined,
         accessMode: isValidDbCode ? "client" : isValidMasterCode ? "master" : "legacy",
+        allowedProfiles: isValidDbCode
+          ? dbValidation.profileRestriction.allowedProfiles
+          : [],
         allowProfileTesting: isValidMasterCode,
         clientId: isValidDbCode ? dbValidation.clientId : undefined,
         clientProfileId: clientProfile.id,
+        forcedProfile: isValidDbCode
+          ? dbValidation.profileRestriction.forcedProfile
+          : undefined,
         isInternalTest: isValidMasterCode,
         planId: isValidDbCode ? dbValidation.planId : undefined,
+        restrictionMode: isValidDbCode
+          ? dbValidation.profileRestriction.mode
+          : "automatic",
       }),
       {
         httpOnly: true,

@@ -103,6 +103,11 @@ type ProcessResponse = {
   personnelQualityMetrics?: PersonnelQualityMetrics;
   companyPersonnelQualityMetrics?: CompanyPersonnelQualityMetrics;
   orientationSelected?: number;
+  allowedProfiles?: string[];
+  detectedProfileBeforeRestriction?: string;
+  forcedProfile?: string;
+  restrictionMode?: string;
+  restrictionReason?: string;
 };
 
 export type OcrTextOnlyDiagnostic = {
@@ -161,6 +166,11 @@ export function OcrWorkflow({
     personnelQualityMetrics?: PersonnelQualityMetrics;
     companyPersonnelQualityMetrics?: CompanyPersonnelQualityMetrics;
     orientationSelected?: number;
+    allowedProfiles?: string[];
+    detectedProfileBeforeRestriction?: string;
+    forcedProfile?: string;
+    restrictionMode?: string;
+    restrictionReason?: string;
   } | null>(null);
   const parsedResult = result ? parseCsvPreview(result.csvContent) : null;
   const showProcessingProgress =
@@ -399,6 +409,12 @@ export function OcrWorkflow({
         companyPersonnelQualityMetrics:
           data.companyPersonnelQualityMetrics,
         orientationSelected: data.orientationSelected,
+        allowedProfiles: data.allowedProfiles,
+        detectedProfileBeforeRestriction:
+          data.detectedProfileBeforeRestriction,
+        forcedProfile: data.forcedProfile,
+        restrictionMode: data.restrictionMode,
+        restrictionReason: data.restrictionReason,
       });
       setProgress({
         currentStep: "Procesamiento completado",
@@ -518,9 +534,21 @@ export function OcrWorkflow({
             Salida: CSV estructurado + JSON estructurado
           </p>
           {allowProfileTesting && accessMode === "master" && result.profileCode ? (
-            <p className="mt-1 text-[11px] opacity-70">
-              profileUsed: {result.profileCode}
-            </p>
+            <div className="mt-1 text-[11px] opacity-70">
+              <p>profileUsed: {result.profileCode}</p>
+              <p>
+                restrictionMode: {result.restrictionMode ?? "automatic"}
+                {result.forcedProfile
+                  ? ` · forcedProfile: ${result.forcedProfile}`
+                  : ""}
+              </p>
+              {result.detectedProfileBeforeRestriction ? (
+                <p>
+                  detectedProfileBeforeRestriction:{" "}
+                  {result.detectedProfileBeforeRestriction}
+                </p>
+              ) : null}
+            </div>
           ) : null}
         </div>
       ) : null}

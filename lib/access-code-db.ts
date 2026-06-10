@@ -1,5 +1,9 @@
 import { hashAccessCode } from "@/lib/access-code";
 import { getPrismaClient } from "@/lib/db";
+import {
+  normalizeProfileRestriction,
+  type OCRProfileRestriction,
+} from "@/lib/profile-restrictions";
 
 export type DbAccessCodeValidation =
   | {
@@ -9,6 +13,7 @@ export type DbAccessCodeValidation =
       clientId: string;
       clientProfileId: string;
       planId: string;
+      profileRestriction: OCRProfileRestriction;
     }
   | {
       source: "db";
@@ -70,6 +75,11 @@ export async function validateAccessCodeFromDatabase(code: string): Promise<DbAc
       profileId: accessCode.client.profileId,
     }),
     planId: accessCode.planId,
+    profileRestriction: normalizeProfileRestriction({
+      allowedProfiles: accessCode.allowedProfiles,
+      forcedProfile: accessCode.forcedProfile,
+      mode: accessCode.restrictionMode,
+    }),
   };
 }
 

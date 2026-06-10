@@ -1,0 +1,4 @@
+ALTER TABLE "access_codes"
+  ADD COLUMN IF NOT EXISTS "restrictionMode" TEXT NOT NULL DEFAULT 'automatic',
+  ADD COLUMN IF NOT EXISTS "allowedProfiles" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+  ADD COLUMN IF NOT EXISTS "forcedProfile" TEXT;

@@ -2,21 +2,38 @@ import {
   getClientProfileById,
   type ClientProfile,
 } from "@/lib/client-profiles";
+import {
+  applyProfileRestriction,
+  type OCRProfileRestriction,
+  type ProfileRestrictionMode,
+} from "@/lib/profile-restrictions";
 
 export type InternalProfileClassification = {
+  allowedProfiles: string[];
   confidence: "low" | "medium" | "high";
+  detectedProfileBeforeRestriction: ClientProfile;
+  forcedProfile?: string;
   profile: ClientProfile;
   reason: string;
+  restrictionMode: ProfileRestrictionMode;
+  restrictionReason: string;
 };
 
 export function classifyInternalOCRProfile(input: {
   configuredProfile?: ClientProfile;
   fileName?: string;
   hasTableSignals?: boolean;
+  restriction?: OCRProfileRestriction;
   text?: string;
 }): InternalProfileClassification {
   const searchable = normalizeSearchText(`${input.fileName ?? ""}\n${input.text ?? ""}`);
   const configuredProfile = input.configuredProfile;
+  const finish = (
+    profileId: string,
+    reason: string,
+    confidence: InternalProfileClassification["confidence"],
+  ) =>
+    classification(profileId, reason, confidence, input.restriction);
   const companyMatches =
     searchable.match(
       /\b(?:s r l|s a|sociedad anonima|sociedad de responsabilidad limitada)\b/g,
@@ -46,7 +63,7 @@ export function classifyInternalOCRProfile(input: {
     dniMatches >= 2 &&
     locationSignals >= 1
   ) {
-    return classification(
+    return finish(
       "internal-personal-empresa-localidad",
       "Coinciden empresas, CUIT, DNI y ubicaciones de un listado de personal.",
       dniMatches >= 10 ? "high" : "medium",
@@ -64,7 +81,7 @@ export function classifyInternalOCRProfile(input: {
   const detectedCuils = searchable.match(/\b\d{2}[- ]?\d{7,8}[- ]?\d\b/g)?.length ?? 0;
 
   if (personnelSignals >= 4 || (personnelSignals >= 2 && detectedCuils >= 5) || detectedCuils > 100) {
-    return classification(
+    return finish(
       "internal-nomina-personal",
       detectedCuils > 100 ? "Se detectaron mas de 100 CUIL." : "Coinciden encabezados de nomina de personal.",
       personnelSignals >= 5 || detectedCuils > 100 ? "high" : "medium",
@@ -82,7 +99,7 @@ export function classifyInternalOCRProfile(input: {
   ]);
 
   if (movementSignals >= 5) {
-    return classification(
+    return finish(
       "internal-movimiento-camiones",
       "Coinciden campos de movimiento logistico.",
       movementSignals >= 6 ? "high" : "medium",
@@ -101,7 +118,7 @@ export function classifyInternalOCRProfile(input: {
   ]);
 
   if (dtveSignals >= 3) {
-    return classification(
+    return finish(
       "internal-dtve-senasa-arca",
       "Coinciden campos de documentacion DTVe, SENASA o ARCA.",
       dtveSignals >= 5 ? "high" : "medium",
@@ -120,7 +137,7 @@ export function classifyInternalOCRProfile(input: {
   ]);
 
   if (commercialSignals >= 2) {
-    return classification(
+    return finish(
       "internal-comprobante-generico",
       "Coinciden campos de un comprobante comercial.",
       commercialSignals >= 4 ? "high" : "medium",
@@ -139,7 +156,7 @@ export function classifyInternalOCRProfile(input: {
   ]);
 
   if (technicalSignals >= 2) {
-    return classification(
+    return finish(
       "internal-documento-tecnico-administrativo",
       "Coinciden secciones de documentacion tecnico-administrativa.",
       technicalSignals >= 4 ? "high" : "medium",
@@ -147,22 +164,22 @@ export function classifyInternalOCRProfile(input: {
   }
 
   if (configuredProfile && configuredProfile.defaultExtractionProfile !== "general") {
-    return {
-      confidence: "medium",
-      profile: configuredProfile,
-      reason: "Se aplico la restriccion documental configurada por el administrador.",
-    };
+    return finish(
+      configuredProfile.id,
+      "Se uso el perfil preferido heredado porque no hubo senales documentales concluyentes.",
+      "medium",
+    );
   }
 
   if (input.hasTableSignals || detectsGenericTable(searchable)) {
-    return classification(
+    return finish(
       "internal-tabla-administrativa",
       "Se detectaron encabezados o patrones tabulares.",
       "medium",
     );
   }
 
-  return classification(
+  return finish(
     "internal-general",
     "No se detecto un perfil documental especifico.",
     "low",
@@ -173,11 +190,20 @@ function classification(
   profileId: string,
   reason: string,
   confidence: InternalProfileClassification["confidence"],
+  restriction?: OCRProfileRestriction,
 ): InternalProfileClassification {
+  const detectedProfile = getClientProfileById(profileId);
+  const decision = applyProfileRestriction(detectedProfile, restriction);
+
   return {
+    allowedProfiles: decision.allowedProfiles,
     confidence,
-    profile: getClientProfileById(profileId),
+    detectedProfileBeforeRestriction: decision.detectedProfileBeforeRestriction,
+    forcedProfile: decision.forcedProfile,
+    profile: decision.finalProfile,
     reason,
+    restrictionMode: decision.restrictionMode,
+    restrictionReason: decision.restrictionReason,
   };
 }
 

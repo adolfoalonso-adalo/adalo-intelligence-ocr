@@ -1,13 +1,17 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import type { ProfileRestrictionMode } from "@/lib/profile-restrictions";
 
 export type AccessSessionPayload = {
   accessCodeId?: string;
   accessMode?: "client" | "legacy" | "master";
+  allowedProfiles?: string[];
   allowProfileTesting?: boolean;
   clientId?: string;
   clientProfileId: string;
+  forcedProfile?: string;
   isInternalTest?: boolean;
   planId?: string;
+  restrictionMode?: ProfileRestrictionMode;
 };
 
 const COOKIE_NAME = "adalo_ocr_access_session";
@@ -37,14 +41,28 @@ export function verifyAccessSessionCookie(cookieValue?: string): AccessSessionPa
         parsed.accessMode === "master" || parsed.accessMode === "legacy" || parsed.accessMode === "client"
           ? parsed.accessMode
           : "legacy",
+      allowedProfiles: Array.isArray(parsed.allowedProfiles)
+        ? parsed.allowedProfiles.filter(
+            (profileId): profileId is string => typeof profileId === "string",
+          )
+        : [],
       allowProfileTesting: parsed.allowProfileTesting === true,
       clientId: typeof parsed.clientId === "string" ? parsed.clientId : undefined,
       clientProfileId:
         typeof parsed.clientProfileId === "string"
           ? parsed.clientProfileId
           : "internal-general",
+      forcedProfile:
+        typeof parsed.forcedProfile === "string"
+          ? parsed.forcedProfile
+          : undefined,
       isInternalTest: parsed.isInternalTest === true,
       planId: typeof parsed.planId === "string" ? parsed.planId : undefined,
+      restrictionMode:
+        parsed.restrictionMode === "allowed_profiles" ||
+        parsed.restrictionMode === "forced_profile"
+          ? parsed.restrictionMode
+          : "automatic",
     };
   } catch {
     return null;

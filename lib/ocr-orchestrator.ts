@@ -29,6 +29,14 @@ import {
   runOpenAiVisualStructuring,
   shouldAttemptOpenAiVisualFallback,
 } from "@/lib/openai-visual-structuring";
+import {
+  applyProfileRestriction,
+  automaticProfileRestriction,
+  OCRProfileRestrictionError,
+  type OCRProfileRestriction,
+  type ProfileRestrictionDecision,
+  type ProfileRestrictionMode,
+} from "@/lib/profile-restrictions";
 
 export type OrchestratedOCRResult = CsvAnalysisResult & {
   confidence?: number;
@@ -41,6 +49,11 @@ export type OrchestratedOCRResult = CsvAnalysisResult & {
   providerUsed?: OCRProviderName;
   qualityStatus?: OCRQualityStatus;
   rowsExtracted?: number;
+  allowedProfiles?: string[];
+  detectedProfileBeforeRestriction?: string;
+  forcedProfile?: string;
+  restrictionMode?: ProfileRestrictionMode;
+  restrictionReason?: string;
   visualStructuringProvider?: string;
   warnings?: string[];
 };
@@ -51,6 +64,7 @@ export async function runOcrExtraction(input: {
   fileBuffer: Buffer;
   fileName: string;
   mimeType: string;
+  profileRestriction?: OCRProfileRestriction;
 }): Promise<OrchestratedOCRResult> {
   const primaryProviderName = normalizeProviderName(process.env.OCR_PRIMARY_PROVIDER);
   const fallbackProviderName = normalizeProviderName(
@@ -68,10 +82,20 @@ export async function runOcrExtraction(input: {
     mimeType: input.mimeType,
     profile: input.clientProfile,
   });
+  const preliminaryRestriction =
+    input.profileRestriction?.mode === "forced_profile"
+      ? input.profileRestriction
+      : automaticProfileRestriction();
+  const preliminaryConfiguredProfile =
+    preprocessing.extractedText?.trim() ||
+    preliminaryRestriction.mode === "forced_profile"
+      ? input.clientProfile
+      : undefined;
   const initialClassification = classifyInternalOCRProfile({
-    configuredProfile: input.clientProfile,
+    configuredProfile: preliminaryConfiguredProfile,
     fileName: input.fileName,
     hasTableSignals: preprocessing.hasTableSignals,
+    restriction: preliminaryRestriction,
     text: preprocessing.extractedText,
   });
   const internalProfile = initialClassification.profile;
@@ -85,9 +109,16 @@ export async function runOcrExtraction(input: {
   };
 
   console.info("[OCR] internal profile classified", {
+    allowedProfiles: input.profileRestriction?.allowedProfiles ?? [],
     confidence: initialClassification.confidence,
+    detectedProfileBeforeRestriction:
+      initialClassification.detectedProfileBeforeRestriction.id,
+    finalProfileUsed: getClientProfileCode(internalProfile),
+    forcedProfile: input.profileRestriction?.forcedProfile,
     profileUsed: getClientProfileCode(internalProfile),
     reason: initialClassification.reason,
+    restrictionMode: input.profileRestriction?.mode ?? "automatic",
+    restrictionReason: initialClassification.restrictionReason,
     providerUsed: "preprocessing",
   });
 
@@ -133,6 +164,10 @@ export async function runOcrExtraction(input: {
         primaryProviderName: primaryProvider.name,
       });
     } catch (advancedError) {
+      if (advancedError instanceof OCRProfileRestrictionError) {
+        throw advancedError;
+      }
+
       if (advancedError instanceof OCRTextOnlyError) {
         advancedTextOnlyError = withOCRTextOnlyContext(advancedError, {
           fallbackUsed: true,
@@ -245,7 +280,13 @@ export async function runOcrExtraction(input: {
     throw primaryError;
   }
 
-  const resultProfile = primaryResult.internalProfile ?? internalProfile;
+  const detectedResultProfile = primaryResult.internalProfile ?? internalProfile;
+  const restrictionDecision = applyProfileRestriction(
+    detectedResultProfile,
+    input.profileRestriction,
+  );
+  const resultProfile = restrictionDecision.finalProfile;
+  logProfileRestrictionDecision(restrictionDecision);
   const primaryAssessment = assessOCRQuality(primaryResult, resultProfile, preprocessing);
   logOCRQualityAssessment({
     assessment: primaryAssessment,
@@ -255,13 +296,13 @@ export async function runOcrExtraction(input: {
   });
 
   if (primaryAssessment.acceptable) {
-    return enrichOCRResult(primaryResult, {
+    return withRestrictionMetadata(enrichOCRResult(primaryResult, {
       assessment: primaryAssessment,
       fallbackProvider: fallbackProvider.name,
       pagesProcessed: preprocessing.pagesProcessed,
       primaryProvider: primaryProvider.name,
       profile: resultProfile,
-    });
+    }), restrictionDecision);
   }
 
   if (primaryProvider.name === "google-document-ai" && primaryResult.rawTextContent) {
@@ -320,7 +361,7 @@ export async function runOcrExtraction(input: {
       fallbackProvider.name,
     )
   ) {
-    return enrichOCRResult(primaryResult, {
+    return withRestrictionMetadata(enrichOCRResult(primaryResult, {
       assessment: {
         ...primaryAssessment,
         acceptable: true,
@@ -337,7 +378,7 @@ export async function runOcrExtraction(input: {
       pagesProcessed: preprocessing.pagesProcessed,
       primaryProvider: primaryProvider.name,
       profile: resultProfile,
-    });
+    }), restrictionDecision);
   }
 
   if (fallbackEnabled && fallbackProvider.name !== primaryProvider.name && primaryAssessment.shouldFallback) {
@@ -384,7 +425,7 @@ export async function runOcrExtraction(input: {
           fallbackProvider.name,
         )
       ) {
-        return enrichOCRResult(primaryResult, {
+        return withRestrictionMetadata(enrichOCRResult(primaryResult, {
           assessment: {
             ...primaryAssessment,
             acceptable: true,
@@ -401,7 +442,7 @@ export async function runOcrExtraction(input: {
           pagesProcessed: preprocessing.pagesProcessed,
           primaryProvider: primaryProvider.name,
           profile: resultProfile,
-        });
+        }), restrictionDecision);
       }
     }
   }
@@ -429,6 +470,7 @@ async function runFallbackProviderOrThrow({
     fileBuffer: Buffer;
     fileName: string;
     mimeType: string;
+    profileRestriction?: OCRProfileRestriction;
   };
   pagesProcessed: number;
   preprocessing: Awaited<ReturnType<typeof analyzeDocumentForOcr>>;
@@ -476,7 +518,14 @@ async function runFallbackProviderOrThrow({
 
     throw error;
   }
-  const fallbackProfile = fallbackResult.internalProfile ?? input.clientProfile;
+  const detectedFallbackProfile =
+    fallbackResult.internalProfile ?? input.clientProfile ?? getClientProfileById("internal-general");
+  const restrictionDecision = applyProfileRestriction(
+    detectedFallbackProfile,
+    input.profileRestriction,
+  );
+  const fallbackProfile = restrictionDecision.finalProfile;
+  logProfileRestrictionDecision(restrictionDecision);
   const fallbackAssessment = assessOCRQuality(fallbackResult, fallbackProfile, preprocessing);
   let multimodalFallbackAttempted = false;
   let multimodalWarnings: string[] = [];
@@ -488,13 +537,13 @@ async function runFallbackProviderOrThrow({
   });
 
   if (fallbackAssessment.acceptable) {
-    return enrichOCRResult(fallbackResult, {
+    return withRestrictionMetadata(enrichOCRResult(fallbackResult, {
       assessment: fallbackAssessment,
       fallbackProvider: fallbackProvider.name,
       pagesProcessed,
       primaryProvider: primaryProviderName,
       profile: fallbackProfile,
-    });
+    }), restrictionDecision);
   }
 
   if (
@@ -568,6 +617,7 @@ async function tryOpenAiVisualFallback(input: {
     fileBuffer: Buffer;
     fileName: string;
     mimeType: string;
+    profileRestriction?: OCRProfileRestriction;
   };
   pagesProcessed: number;
   preprocessing: Awaited<ReturnType<typeof analyzeDocumentForOcr>>;
@@ -663,13 +713,16 @@ async function tryOpenAiVisualFallback(input: {
 
     return {
       attempted: true,
-      result: enrichOCRResult(providerResult, {
+      result: withRestrictionMetadata(enrichOCRResult(providerResult, {
         assessment,
         fallbackProvider: input.fallbackProviderName,
         pagesProcessed: providerResult.pagesProcessed ?? input.pagesProcessed,
         primaryProvider: input.primaryProviderName,
         profile: input.profile,
-      }),
+      }), applyProfileRestriction(
+        input.profile ?? getClientProfileById("internal-general"),
+        input.input.profileRestriction,
+      )),
       warnings: [],
     };
   } catch (error) {
@@ -713,6 +766,37 @@ function enrichOCRResult(
     rowsExtracted: result.extractedRows,
     warnings: context.assessment.warnings,
   };
+}
+
+function withRestrictionMetadata(
+  result: OrchestratedOCRResult,
+  decision: ProfileRestrictionDecision,
+): OrchestratedOCRResult {
+  return {
+    ...result,
+    allowedProfiles: decision.allowedProfiles,
+    detectedProfileBeforeRestriction:
+      decision.detectedProfileBeforeRestriction.id,
+    forcedProfile: decision.forcedProfile,
+    profileCode: decision.finalProfile.id,
+    profileName: decision.finalProfile.label,
+    restrictionMode: decision.restrictionMode,
+    restrictionReason: decision.restrictionReason,
+  };
+}
+
+function logProfileRestrictionDecision(
+  decision: ProfileRestrictionDecision,
+) {
+  console.info("[OCR] profile restriction decision", {
+    allowedProfiles: decision.allowedProfiles,
+    detectedProfileBeforeRestriction:
+      decision.detectedProfileBeforeRestriction.id,
+    finalProfileUsed: decision.finalProfile.id,
+    forcedProfile: decision.forcedProfile,
+    restrictionMode: decision.restrictionMode,
+    restrictionReason: decision.restrictionReason,
+  });
 }
 
 function shouldAllowLocalFallbackResult(

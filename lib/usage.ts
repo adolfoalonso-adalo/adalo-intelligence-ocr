@@ -1,12 +1,17 @@
 import type { AccessSessionPayload } from "@/lib/access-session";
 import { getPrismaClient } from "@/lib/db";
 import type { DocumentType } from "@/lib/document-type";
+import {
+  normalizeProfileRestriction,
+  type OCRProfileRestriction,
+} from "@/lib/profile-restrictions";
 
 export type OcrPlanContext = {
   accessCodeId: string;
   clientId: string;
   clientProfileId: string;
   planId: string;
+  profileRestriction: OCRProfileRestriction;
   plan: {
     allowJsonExport: boolean;
     dailyLimit: number;
@@ -83,6 +88,11 @@ export async function getOcrUsageContext(payload: AccessSessionPayload | null): 
       monthlyLimit: accessCode.plan.monthlyLimit,
       name: accessCode.plan.name,
     },
+    profileRestriction: normalizeProfileRestriction({
+      allowedProfiles: accessCode.allowedProfiles,
+      forcedProfile: accessCode.forcedProfile,
+      mode: accessCode.restrictionMode,
+    }),
   };
 
   const [dailyUsage, monthlyUsage] = await Promise.all([

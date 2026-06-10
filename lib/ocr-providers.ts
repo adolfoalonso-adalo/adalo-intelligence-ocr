@@ -33,6 +33,7 @@ import {
   sanitizeRawOcrText,
 } from "@/lib/ocr-diagnostics";
 import { classifyInternalOCRProfile } from "@/lib/internal-profile-classifier";
+import type { OCRProfileRestriction } from "@/lib/profile-restrictions";
 import {
   calculatePersonnelRosterMetrics,
   extractPersonnelRosterByPattern,
@@ -51,6 +52,7 @@ export type OCRProviderInput = {
   fileName: string;
   mimeType: string;
   preprocessing?: DocumentPreprocessingResult;
+  profileRestriction?: OCRProfileRestriction;
 };
 
 export type OCRProviderResult = CsvAnalysisResult & {
@@ -246,6 +248,7 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
       configuredProfile: input.clientProfile,
       fileName: input.fileName,
       hasTableSignals: Boolean(tablesText),
+      restriction: input.profileRestriction,
       text: rawTextContent,
     });
     const clientProfile = await withCorrectionExamples(classification.profile);
@@ -254,9 +257,16 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
       classification.profile,
     );
     console.info("[OCR] internal profile classified", {
+      allowedProfiles: classification.allowedProfiles,
       confidence: classification.confidence,
+      detectedProfileBeforeRestriction:
+        classification.detectedProfileBeforeRestriction.id,
+      finalProfileUsed: getClientProfileCode(classification.profile),
+      forcedProfile: classification.forcedProfile,
       profileUsed: getClientProfileCode(classification.profile),
       reason: classification.reason,
+      restrictionMode: classification.restrictionMode,
+      restrictionReason: classification.restrictionReason,
       providerUsed: this.name,
     });
     const personnelPattern = isPersonnelRosterProfile(classification.profile)

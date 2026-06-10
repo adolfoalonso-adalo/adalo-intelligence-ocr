@@ -2,11 +2,13 @@ import { redirect } from "next/navigation";
 import type { InputHTMLAttributes, ReactNode } from "react";
 import { AdminGenerateCode } from "@/components/admin-generate-code";
 import { requireAdminSession } from "@/lib/admin";
+import { ADMIN_PROFILE_OPTIONS } from "@/lib/client-profiles";
 import { getPrismaClient, isDatabaseConfigured } from "@/lib/db";
 import {
   createClientAction,
   revokeAccessCodeAction,
   toggleClientStatusAction,
+  updateAccessCodeRestrictionAction,
   updateClientAction,
 } from "./actions";
 
@@ -37,6 +39,7 @@ type AdminClient = {
 };
 
 type AdminAccessCode = {
+  allowedProfiles: string[];
   client: { name: string };
   codeAlias: string | null;
   displayCodePrefix: string | null;
@@ -44,6 +47,8 @@ type AdminAccessCode = {
   id: string;
   lastUsedAt: Date | null;
   plan: { name: string };
+  forcedProfile: string | null;
+  restrictionMode: string;
   status: string;
 };
 
@@ -183,13 +188,9 @@ export default async function AdminPage() {
             <Input name="email" placeholder="Email" type="email" />
             <Input name="contactName" placeholder="Contacto" />
             <Input name="phone" placeholder="Telefono" />
-            <select name="profileId" className={fieldClassName}>
-              <option value="internal-general">Deteccion automatica</option>
-              <option value="internal-dtve-senasa-arca">Restringir a DTVe / SENASA / ARCA</option>
-              <option value="internal-movimiento-camiones">Restringir a movimiento de camiones</option>
-              <option value="internal-nomina-personal">Restringir a nomina de personal</option>
-              <option value="internal-tabla-administrativa">Restringir a tabla administrativa</option>
-            </select>
+            <div className="rounded-xl border border-brand-border bg-brand-cream px-3 py-2 text-xs text-brand-slate">
+              Los codigos nuevos usan deteccion automatica. Las restricciones se configuran al generar cada codigo.
+            </div>
             <select name="planId" className={fieldClassName}>
               <option value="">Sin plan</option>
               {plans.map((plan: AdminPlan) => (
@@ -216,7 +217,7 @@ export default async function AdminPage() {
                 <tr>
                   <Th>Nombre</Th>
                   <Th>Email</Th>
-                  <Th>Perfil</Th>
+                  <Th>Perfil heredado</Th>
                   <Th>Estado</Th>
                   <Th>Plan</Th>
                   <Th>Usos del mes</Th>
@@ -234,7 +235,12 @@ export default async function AdminPage() {
                     <Td>{client.usageEvents.length}</Td>
                     <Td>
                       <div className="space-y-3">
-                        <AdminGenerateCode clientId={client.id} defaultPlanId={client.planId} plans={plans} />
+                        <AdminGenerateCode
+                          clientId={client.id}
+                          defaultPlanId={client.planId}
+                          plans={plans}
+                          profileOptions={ADMIN_PROFILE_OPTIONS}
+                        />
                         <details className="rounded-xl border border-brand-border bg-brand-cream p-3">
                           <summary className="cursor-pointer text-xs font-semibold text-brand-deep">
                             Editar cliente
@@ -246,13 +252,6 @@ export default async function AdminPage() {
                             <Input name="email" defaultValue={client.email ?? ""} placeholder="Email" type="email" />
                             <Input name="contactName" defaultValue={client.contactName ?? ""} placeholder="Contacto" />
                             <Input name="phone" defaultValue={client.phone ?? ""} placeholder="Telefono" />
-                            <select name="profileId" defaultValue={client.profileId} className={fieldClassName}>
-                              <option value="internal-general">Deteccion automatica</option>
-                              <option value="internal-dtve-senasa-arca">Restringir a DTVe / SENASA / ARCA</option>
-                              <option value="internal-movimiento-camiones">Restringir a movimiento de camiones</option>
-                              <option value="internal-nomina-personal">Restringir a nomina de personal</option>
-                              <option value="internal-tabla-administrativa">Restringir a tabla administrativa</option>
-                            </select>
                             <select name="planId" defaultValue={client.planId ?? ""} className={fieldClassName}>
                               <option value="">Sin plan</option>
                               {plans.map((plan: AdminPlan) => (
@@ -303,6 +302,7 @@ export default async function AdminPage() {
                   <Th>Estado</Th>
                   <Th>Vencimiento</Th>
                   <Th>Ultimo uso</Th>
+                  <Th>Restriccion documental</Th>
                   <Th>Acciones</Th>
                 </tr>
               </thead>
@@ -316,10 +316,59 @@ export default async function AdminPage() {
                     <Td>{formatDate(code.expiresAt)}</Td>
                     <Td>{formatDate(code.lastUsedAt)}</Td>
                     <Td>
-                      <form action={revokeAccessCodeAction}>
-                        <input type="hidden" name="accessCodeId" value={code.id} />
-                        <button className="text-xs font-semibold text-red-700">Revocar</button>
-                      </form>
+                      <RestrictionSummary code={code} />
+                    </Td>
+                    <Td>
+                      <div className="space-y-3">
+                        <details className="rounded-xl border border-brand-border bg-brand-cream p-3">
+                          <summary className="cursor-pointer text-xs font-semibold text-brand-deep">
+                            Configurar restriccion
+                          </summary>
+                          <form action={updateAccessCodeRestrictionAction} className="mt-3 space-y-3">
+                            <input type="hidden" name="accessCodeId" value={code.id} />
+                            <select
+                              name="restrictionMode"
+                              defaultValue={code.restrictionMode}
+                              className={fieldClassName}
+                            >
+                              <option value="automatic">Deteccion automatica</option>
+                              <option value="allowed_profiles">Permitir solo ciertos tipos</option>
+                              <option value="forced_profile">Forzar siempre un tipo documental</option>
+                            </select>
+                            <div className="grid gap-1">
+                              {ADMIN_PROFILE_OPTIONS.map((profile) => (
+                                <label key={profile.id} className="flex items-center gap-2 text-xs text-brand-slate">
+                                  <input
+                                    type="checkbox"
+                                    name="allowedProfiles"
+                                    value={profile.id}
+                                    defaultChecked={code.allowedProfiles.includes(profile.id)}
+                                  />
+                                  {profile.label}
+                                </label>
+                              ))}
+                            </div>
+                            <select
+                              name="forcedProfile"
+                              defaultValue={code.forcedProfile ?? ADMIN_PROFILE_OPTIONS[0]?.id}
+                              className={fieldClassName}
+                            >
+                              {ADMIN_PROFILE_OPTIONS.map((profile) => (
+                                <option key={profile.id} value={profile.id}>
+                                  {profile.label}
+                                </option>
+                              ))}
+                            </select>
+                            <button className="rounded-xl bg-brand-deep px-3 py-2 text-xs font-semibold text-white">
+                              Guardar restriccion
+                            </button>
+                          </form>
+                        </details>
+                        <form action={revokeAccessCodeAction}>
+                          <input type="hidden" name="accessCodeId" value={code.id} />
+                          <button className="text-xs font-semibold text-red-700">Revocar</button>
+                        </form>
+                      </div>
                     </Td>
                   </tr>
                 ))}
@@ -402,6 +451,36 @@ function DataSection({ children, title }: { children: ReactNode; title: string }
       <h2 className="text-lg font-semibold text-brand-deep">{title}</h2>
       <div className="mt-4">{children}</div>
     </section>
+  );
+}
+
+function RestrictionSummary({ code }: { code: AdminAccessCode }) {
+  if (code.restrictionMode === "forced_profile" && code.forcedProfile) {
+    return (
+      <span className="text-xs text-brand-deep">
+        Forzado: {getProfileLabel(code.forcedProfile)}
+      </span>
+    );
+  }
+
+  if (
+    code.restrictionMode === "allowed_profiles" &&
+    code.allowedProfiles.length > 0
+  ) {
+    return (
+      <span className="text-xs text-brand-deep">
+        Permitidos: {code.allowedProfiles.map(getProfileLabel).join(", ")}
+      </span>
+    );
+  }
+
+  return <span className="text-xs text-brand-slate">Deteccion automatica</span>;
+}
+
+function getProfileLabel(profileId: string) {
+  return (
+    ADMIN_PROFILE_OPTIONS.find((profile) => profile.id === profileId)?.label ??
+    profileId
   );
 }
 

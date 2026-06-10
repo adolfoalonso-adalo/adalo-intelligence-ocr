@@ -56,6 +56,9 @@ model AccessCode {
   codeAlias         String?
   displayCodePrefix String?
   status            String    @default("active")
+  restrictionMode   String    @default("automatic")
+  allowedProfiles   String[]  @default([])
+  forcedProfile     String?
   expiresAt         DateTime?
   lastUsedAt        DateTime?
   createdAt         DateTime  @default(now())

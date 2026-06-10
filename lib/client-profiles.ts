@@ -306,6 +306,13 @@ Reglas:
   },
 ];
 
+export const ADMIN_PROFILE_OPTIONS = CLIENT_PROFILES.filter(
+  (profile) => profile.id !== GENERAL_PROFILE.id,
+).map((profile) => ({
+  id: profile.id,
+  label: profile.userFacingExtractionType ?? profile.label,
+}));
+
 export function getClientProfileById(profileId?: string | null): ClientProfile {
   const normalizedId = normalizeLegacyProfileId(profileId);
   return CLIENT_PROFILES.find((profile) => profile.id === normalizedId) ?? GENERAL_PROFILE;

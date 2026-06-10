@@ -38,6 +38,11 @@ import { OCRTextOnlyError } from "@/lib/ocr-diagnostics";
 import { runOcrExtraction } from "@/lib/ocr-orchestrator";
 import type { OCRQualityStatus } from "@/lib/ocr-quality";
 import {
+  normalizeProfileRestriction,
+  OCRProfileRestrictionError,
+  type ProfileRestrictionMode,
+} from "@/lib/profile-restrictions";
+import {
   createLocalPdfTextFallbackFromBuffer,
   createLocalPdfTextFallbackResult,
 } from "@/lib/pdf-local-fallback";
@@ -157,6 +162,13 @@ export async function POST(request: Request) {
     }
 
     usageContext = usageCheck.context;
+    const profileRestriction =
+      usageContext?.profileRestriction ??
+      normalizeProfileRestriction({
+        allowedProfiles: accessSession?.allowedProfiles,
+        forcedProfile: accessSession?.forcedProfile,
+        mode: accessSession?.restrictionMode,
+      });
 
     const contentType = request.headers.get("content-type") || "";
 
@@ -440,6 +452,7 @@ export async function POST(request: Request) {
         fileBuffer,
         fileName: originalFileName,
         mimeType,
+        profileRestriction,
       });
       logApiTiming(
         mimeType === "application/pdf" ? "direct-file-analysis" : "direct-file-analysis",
@@ -540,6 +553,50 @@ export async function POST(request: Request) {
       throw analysisError;
     }
   } catch (error) {
+    if (error instanceof OCRProfileRestrictionError) {
+      const durationMs = Date.now() - startedAt;
+
+      console.warn("[OCR API] profile restriction rejected document", {
+        allowedProfiles: error.allowedProfiles,
+        detectedProfileBeforeRestriction: error.detectedProfile.id,
+        finalProfileUsed: null,
+        restrictionMode: error.restrictionMode,
+        restrictionReason: error.message,
+      });
+
+      await recordUsageEvent({
+        context: usageContext,
+        durationMs,
+        errorType: "profile_not_allowed",
+        estimatedDocumentType,
+        fileMimeType: originalMimeType,
+        fileSizeBytes: originalFileSize,
+        isInternalTest: accessSessionForUsage?.isInternalTest,
+        originalFileName,
+        status: "error",
+      });
+
+      return NextResponse.json(
+        {
+          success: false,
+          error: error.message,
+          detectedProfileBeforeRestriction: error.detectedProfile.id,
+          detectedType:
+            error.detectedProfile.userFacingExtractionType ??
+            error.detectedProfile.label,
+          restrictionMode: error.restrictionMode,
+          allowedProfiles: error.allowedProfiles,
+          ...(process.env.NODE_ENV !== "production"
+            ? {
+                technicalDetail:
+                  "El perfil detectado no esta habilitado por este codigo de acceso.",
+              }
+            : {}),
+        },
+        { status: 422 },
+      );
+    }
+
     if (error instanceof OCRTextOnlyError) {
       const diagnostic = error.diagnostic;
       const durationMs = Date.now() - startedAt;
@@ -793,6 +850,11 @@ async function successResponse(
     orientationSelected?: 0 | 90 | 180 | 270;
     rowsExtracted?: number;
     visualStructuringProvider?: string;
+    allowedProfiles?: string[];
+    detectedProfileBeforeRestriction?: string;
+    forcedProfile?: string;
+    restrictionMode?: ProfileRestrictionMode;
+    restrictionReason?: string;
   },
   startedAt: number,
   rateLimit: RateLimitResult,
@@ -892,6 +954,12 @@ async function successResponse(
       companyPersonnelQualityMetrics:
         result.companyPersonnelQualityMetrics,
       orientationSelected: result.orientationSelected,
+      allowedProfiles: result.allowedProfiles,
+      detectedProfileBeforeRestriction:
+        result.detectedProfileBeforeRestriction,
+      forcedProfile: result.forcedProfile,
+      restrictionMode: result.restrictionMode,
+      restrictionReason: result.restrictionReason,
       durationMs,
     },
     200,

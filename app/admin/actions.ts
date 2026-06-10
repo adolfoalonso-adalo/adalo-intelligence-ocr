@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { requireAdminSession } from "@/lib/admin";
 import { getPrismaClient } from "@/lib/db";
+import { normalizeProfileRestriction } from "@/lib/profile-restrictions";
 
 export async function createClientAction(formData: FormData) {
   const isAdmin = await assertAdminAction();
@@ -22,7 +23,7 @@ export async function createClientAction(formData: FormData) {
       notes: readFormValue(formData, "notes") || null,
       phone: readFormValue(formData, "phone") || null,
       planId: readFormValue(formData, "planId") || null,
-      profileId: readFormValue(formData, "profileId") || "internal-general",
+      profileId: "internal-general",
       status: readFormValue(formData, "status") || "active",
     },
   });
@@ -68,8 +69,36 @@ export async function updateClientAction(formData: FormData) {
       notes: readFormValue(formData, "notes") || null,
       phone: readFormValue(formData, "phone") || null,
       planId: readFormValue(formData, "planId") || null,
-      profileId: readFormValue(formData, "profileId") || "internal-general",
       status: readFormValue(formData, "status") || "active",
+    },
+  });
+
+  revalidatePath("/admin");
+}
+
+export async function updateAccessCodeRestrictionAction(formData: FormData) {
+  const isAdmin = await assertAdminAction();
+  const prisma = getPrismaClient();
+
+  if (!isAdmin || !prisma) return;
+
+  const accessCodeId = readFormValue(formData, "accessCodeId");
+  if (!accessCodeId) return;
+
+  const restriction = normalizeProfileRestriction({
+    allowedProfiles: formData
+      .getAll("allowedProfiles")
+      .filter((profileId): profileId is string => typeof profileId === "string"),
+    forcedProfile: readFormValue(formData, "forcedProfile"),
+    mode: readFormValue(formData, "restrictionMode"),
+  });
+
+  await prisma.accessCode.update({
+    where: { id: accessCodeId },
+    data: {
+      allowedProfiles: restriction.allowedProfiles,
+      forcedProfile: restriction.forcedProfile ?? null,
+      restrictionMode: restriction.mode,
     },
   });
 
