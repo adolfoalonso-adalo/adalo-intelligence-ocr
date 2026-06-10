@@ -23,6 +23,16 @@ export type OcrStatus =
 
 type ResultQuality = "ai" | "partial" | "local-fallback";
 
+type PersonnelQualityMetrics = {
+  filasConCUIL: number;
+  filasConLocalidad: number;
+  filasConLugarTrabajo: number;
+  filasConNombre: number;
+  filasConProvincia: number;
+  porcentajeCompletitud: number;
+  totalRegistros: number;
+};
+
 type ProcessResponse = {
   success: boolean;
   csvContent?: string;
@@ -53,6 +63,7 @@ type ProcessResponse = {
   canDownloadRawText?: boolean;
   rawTextContent?: string;
   rawTextFileName?: string;
+  personnelQualityMetrics?: PersonnelQualityMetrics;
 };
 
 export type OcrTextOnlyDiagnostic = {
@@ -101,6 +112,7 @@ export function OcrWorkflow({
     extractionType?: string;
     resultQuality?: ResultQuality;
     durationMs?: number;
+    personnelQualityMetrics?: PersonnelQualityMetrics;
   } | null>(null);
   const parsedResult = result ? parseCsvPreview(result.csvContent) : null;
 
@@ -260,6 +272,7 @@ export function OcrWorkflow({
         extractionType: data.extractionType,
         resultQuality: data.resultQuality,
         durationMs: data.durationMs,
+        personnelQualityMetrics: data.personnelQualityMetrics,
       });
       setStatus("done");
     } catch (caughtError) {
@@ -354,6 +367,28 @@ export function OcrWorkflow({
               profileUsed: {result.profileCode}
             </p>
           ) : null}
+        </div>
+      ) : null}
+
+      {result?.personnelQualityMetrics && status === "done" ? (
+        <div className="rounded-2xl border border-brand-border bg-brand-card px-4 py-3 text-center text-xs leading-5 text-brand-slate">
+          <p className="font-semibold text-brand-deep">Calidad de la nómina</p>
+          <p className="mt-1">
+            {result.personnelQualityMetrics.totalRegistros} registros
+            {" · "}
+            {result.personnelQualityMetrics.filasConNombre} con nombre
+            {" · "}
+            {result.personnelQualityMetrics.filasConCUIL} con CUIL
+            {" · "}
+            {result.personnelQualityMetrics.filasConLugarTrabajo} con lugar de trabajo
+          </p>
+          <p>
+            {result.personnelQualityMetrics.filasConLocalidad} con localidad
+            {" · "}
+            {result.personnelQualityMetrics.filasConProvincia} con provincia
+            {" · "}
+            {formatPercentage(result.personnelQualityMetrics.porcentajeCompletitud)} de completitud
+          </p>
         </div>
       ) : null}
 
@@ -526,6 +561,10 @@ function formatRecordCount(value: number) {
 
 function formatDuration(durationMs: number) {
   return `${(durationMs / 1000).toFixed(1).replace(".", ",")} s`;
+}
+
+function formatPercentage(value: number) {
+  return `${value.toFixed(1).replace(".", ",")}%`;
 }
 
 function formatExtractionMode(value?: string) {

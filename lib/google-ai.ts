@@ -45,6 +45,15 @@ export type CsvAnalysisResult = {
   pagesProcessed?: number;
   rowsExtracted?: number;
   warnings?: string[];
+  personnelQualityMetrics?: {
+    filasConCUIL: number;
+    filasConLocalidad: number;
+    filasConLugarTrabajo: number;
+    filasConNombre: number;
+    filasConProvincia: number;
+    porcentajeCompletitud: number;
+    totalRegistros: number;
+  };
 };
 
 export class CsvAnalysisError extends Error {

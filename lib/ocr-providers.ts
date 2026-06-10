@@ -24,6 +24,7 @@ import {
 } from "@/lib/ocr-diagnostics";
 import { classifyInternalOCRProfile } from "@/lib/internal-profile-classifier";
 import {
+  calculatePersonnelRosterMetrics,
   extractPersonnelRosterByPattern,
   normalizePersonnelRosterValue,
   PERSONNEL_ROSTER_COLUMNS,
@@ -364,6 +365,7 @@ function normalizeProviderResultForProfile(
     extractedRows: finalRows.length,
     jsonColumns: columns,
     jsonRows: finalRows,
+    personnelQualityMetrics: calculatePersonnelRosterMetrics(finalRows),
     rowsExtracted: finalRows.length,
   };
 }
@@ -406,11 +408,12 @@ function createPersonnelPatternResult(input: {
     csvContent: recordsToCsv(columns, rows),
     extractedRows: rows.length,
     extractionMode: "pattern_structured",
-    fileName: createCsvFileName("LISTADO"),
+    fileName: createCsvFileName("NOMINA"),
     jsonColumns: columns,
     jsonRows: rows,
     modelUsed: "google-document-ai · pattern_structured",
     pagesProcessed: input.pageCount,
+    personnelQualityMetrics: input.pattern.metrics,
     resultQuality: "ai",
     rowsExtracted: rows.length,
     warnings: [

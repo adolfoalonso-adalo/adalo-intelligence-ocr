@@ -756,6 +756,15 @@ async function successResponse(
     pagesProcessed?: number;
     profileCode?: string;
     profileName?: string;
+    personnelQualityMetrics?: {
+      filasConCUIL: number;
+      filasConLocalidad: number;
+      filasConLugarTrabajo: number;
+      filasConNombre: number;
+      filasConProvincia: number;
+      porcentajeCompletitud: number;
+      totalRegistros: number;
+    };
     rowsExtracted?: number;
   },
   startedAt: number,
@@ -849,6 +858,7 @@ async function successResponse(
       qualityStatus: result.qualityStatus,
       confidence: result.confidence,
       warnings: result.warnings,
+      personnelQualityMetrics: result.personnelQualityMetrics,
       durationMs,
     },
     200,
@@ -871,6 +881,10 @@ function resolveCsvFileKind(
 ): CsvFileKind {
   const modelUsed = result.modelUsed.toLowerCase();
 
+  if (result.profileCode === "internal-nomina-personal") {
+    return "NOMINA";
+  }
+
   if (
     result.profileCode === "internal-movimiento-camiones" ||
     context.clientProfile?.id === "internal-movimiento-camiones" ||
@@ -879,10 +893,7 @@ function resolveCsvFileKind(
     return "MOVIMIENTO";
   }
 
-  if (
-    result.profileCode === "internal-nomina-personal" ||
-    result.profileCode === "internal-tabla-administrativa"
-  ) {
+  if (result.profileCode === "internal-tabla-administrativa") {
     return "LISTADO";
   }
 

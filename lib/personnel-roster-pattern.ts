@@ -12,11 +12,22 @@ export type PersonnelRosterRow = Record<(typeof PERSONNEL_ROSTER_COLUMNS)[number
 export type PersonnelRosterPatternResult = {
   acceptable: boolean;
   detectedCuils: number;
+  metrics: PersonnelRosterMetrics;
   qualityScore: number;
   recognizedProvinceRows: number;
   rows: PersonnelRosterRow[];
   validRows: number;
   warnings: string[];
+};
+
+export type PersonnelRosterMetrics = {
+  filasConCUIL: number;
+  filasConLocalidad: number;
+  filasConLugarTrabajo: number;
+  filasConNombre: number;
+  filasConProvincia: number;
+  porcentajeCompletitud: number;
+  totalRegistros: number;
 };
 
 const CUIL_PATTERN = /\b(?:\d{10,11}|\d{2}[- ]?\d{7,8}[- ]?\d)\b/g;
@@ -54,6 +65,27 @@ const CANONICAL_PROVINCES = new Map(
   PROVINCES.map((province) => [normalizeSearchValue(province), restoreProvinceAccents(province)]),
 );
 
+const KNOWN_LOCALITIES = [
+  "Buenos Aires",
+  "Campo Quijano",
+  "Catamarca",
+  "Chaco",
+  "Chubut",
+  "Comodoro Rivadavia",
+  "Cordoba",
+  "General Mosconi",
+  "Jujuy",
+  "La Pampa",
+  "Mendoza",
+  "Salta",
+  "San Juan",
+  "Tucuman",
+] as const;
+
+const NORMALIZED_LOCALITIES = new Set(
+  KNOWN_LOCALITIES.map((locality) => normalizeSearchValue(locality)),
+);
+
 export function extractPersonnelRosterByPattern(
   rawText: string,
 ): PersonnelRosterPatternResult {
@@ -80,8 +112,41 @@ export function extractPersonnelRosterByPattern(
   return {
     ...assessment,
     detectedCuils: anchors.length,
+    metrics: calculatePersonnelRosterMetrics(rows),
     rows,
     warnings,
+  };
+}
+
+export function calculatePersonnelRosterMetrics(
+  rows: Array<Record<string, string>>,
+): PersonnelRosterMetrics {
+  const totalRegistros = rows.length;
+  const filasConNombre = countRowsWithValue(rows, "NombreApellido");
+  const filasConCUIL = rows.filter((row) => isValidCuil(row.CUIL)).length;
+  const filasConLugarTrabajo = countRowsWithValue(rows, "LugarTrabajo");
+  const filasConLocalidad = countRowsWithValue(rows, "Localidad");
+  const filasConProvincia = rows.filter((row) =>
+    isRecognizedProvince(row.Provincia),
+  ).length;
+  const completedCells =
+    countRowsWithValue(rows, "Numero") +
+    filasConNombre +
+    filasConCUIL +
+    filasConLugarTrabajo +
+    filasConLocalidad +
+    filasConProvincia;
+  const possibleCells = totalRegistros * PERSONNEL_ROSTER_COLUMNS.length;
+
+  return {
+    filasConCUIL,
+    filasConLocalidad,
+    filasConLugarTrabajo,
+    filasConNombre,
+    filasConProvincia,
+    porcentajeCompletitud:
+      possibleCells > 0 ? Math.round((completedCells / possibleCells) * 1000) / 10 : 0,
+    totalRegistros,
   };
 }
 
@@ -209,7 +274,7 @@ function buildPersonnelRow(
     .slice(anchor.matchIndex + anchor.matchLength)
     .trim();
   const beforeLines = lines.slice(
-    Math.max(previousLineIndex + 1, anchor.lineIndex - 4),
+    Math.max(previousLineIndex + 1, anchor.lineIndex - 8),
     anchor.lineIndex,
   );
   const afterLines = [
@@ -263,7 +328,9 @@ function extractPersonName(prefix: string, beforeLines: string[]) {
     return prefixWithoutNumber;
   }
 
-  for (const line of [...beforeLines].reverse()) {
+  const candidateLines = getCurrentPersonPrelude(beforeLines);
+
+  for (const line of [...candidateLines].reverse()) {
     const candidate = line.replace(/^\s*\d{1,4}\s*[-.)]?\s*/, "").trim();
 
     if (isLikelyPersonName(candidate)) {
@@ -272,6 +339,30 @@ function extractPersonName(prefix: string, beforeLines: string[]) {
   }
 
   return "";
+}
+
+function getCurrentPersonPrelude(beforeLines: string[]) {
+  let boundaryIndex = -1;
+
+  beforeLines.forEach((line, index) => {
+    if (findProvinceMatch(line)) {
+      boundaryIndex = index;
+    }
+  });
+
+  if (boundaryIndex >= 0) {
+    return beforeLines.slice(boundaryIndex + 1);
+  }
+
+  const workplaceIndex = findLastIndex(beforeLines, (line) =>
+    WORKPLACE_PATTERN.test(line),
+  );
+
+  if (workplaceIndex >= 0) {
+    return beforeLines.slice(Math.min(workplaceIndex + 3, beforeLines.length));
+  }
+
+  return beforeLines;
 }
 
 function extractLocality(
@@ -310,7 +401,7 @@ function extractLocality(
 }
 
 function cleanLocalityCandidate(value: string) {
-  return value
+  const cleaned = value
     .replace(/\|/g, " ")
     .replace(WORKPLACE_PATTERN, " ")
     .replace(/^(?:(?:OD|D|0|00|10)\b[\s:;,.-]*)+/i, "")
@@ -318,6 +409,8 @@ function cleanLocalityCandidate(value: string) {
     .replace(/\b\d{1,4}\b/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+
+  return normalizeKnownLocality(cleaned);
 }
 
 function findProvinceMatch(value: string) {
@@ -330,7 +423,7 @@ function findProvinceMatch(value: string) {
     | undefined;
 
   for (const [searchName, canonical] of CANONICAL_PROVINCES) {
-    const normalizedIndex = normalized.text.indexOf(searchName);
+    const normalizedIndex = normalized.text.lastIndexOf(searchName);
     if (normalizedIndex < 0) continue;
 
     const candidate = {
@@ -338,7 +431,9 @@ function findProvinceMatch(value: string) {
       index: normalized.originalIndexes[normalizedIndex] ?? 0,
     };
 
-    if (!best || candidate.index < best.index) {
+    // Provincia es el ancla final de la fila. Si localidad y provincia
+    // comparten nombre (por ejemplo San Juan), usamos la ultima aparicion.
+    if (!best || candidate.index > best.index) {
       best = candidate;
     }
   }
@@ -363,6 +458,7 @@ function isLikelyPersonName(value: string) {
     isRepeatedHeaderOrNoise(normalized) ||
     WORKPLACE_PATTERN.test(normalized) ||
     isRecognizedProvince(normalized) ||
+    looksLikeKnownLocality(normalized) ||
     containsCuil
   ) {
     return false;
@@ -377,6 +473,21 @@ function isRecognizedProvince(value: string) {
 
 function canonicalizeProvince(value: string) {
   return CANONICAL_PROVINCES.get(normalizeSearchValue(value)) ?? value.trim();
+}
+
+function looksLikeKnownLocality(value: string) {
+  return NORMALIZED_LOCALITIES.has(normalizeSearchValue(value));
+}
+
+function normalizeKnownLocality(value: string) {
+  const normalized = normalizeSearchValue(value);
+  const known = KNOWN_LOCALITIES.find(
+    (locality) => normalizeSearchValue(locality) === normalized,
+  );
+
+  if (!known) return value.trim();
+
+  return restoreProvinceAccents(known);
 }
 
 function isRepeatedHeaderOrNoise(value: string) {
@@ -458,4 +569,16 @@ function restoreProvinceAccents(value: string) {
 
 function roundConfidence(value: number) {
   return Math.max(0, Math.min(1, Math.round(value * 100) / 100));
+}
+
+function countRowsWithValue(rows: Array<Record<string, string>>, column: string) {
+  return rows.filter((row) => String(row[column] ?? "").trim().length > 0).length;
+}
+
+function findLastIndex<T>(values: T[], predicate: (value: T) => boolean) {
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    if (predicate(values[index])) return index;
+  }
+
+  return -1;
 }
