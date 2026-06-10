@@ -454,6 +454,7 @@ export async function POST(request: Request) {
       console.info("[OCR API] OCR orchestrator success", {
         modelUsed: analysis.modelUsed,
         providerUsed: analysis.providerUsed,
+        visualStructuringProvider: analysis.visualStructuringProvider,
         qualityStatus: analysis.qualityStatus,
         confidence: analysis.confidence,
         extractedRows: analysis.extractedRows,
@@ -551,6 +552,10 @@ export async function POST(request: Request) {
         failedReason: diagnostic.reason,
         profileUsed: diagnostic.profileUsed,
         fallbackUsed: diagnostic.fallbackUsed,
+        multimodalFallbackAttempted:
+          diagnostic.multimodalFallbackAttempted,
+        visualStructuringProvider:
+          diagnostic.visualStructuringProvider,
       });
 
       logApiTiming("total", startedAt, {
@@ -579,6 +584,8 @@ export async function POST(request: Request) {
           extractionMode: diagnostic.extractionMode,
           providerUsed: diagnostic.providerUsed,
           fallbackUsed: diagnostic.fallbackUsed,
+          multimodalFallbackAttempted:
+            diagnostic.multimodalFallbackAttempted,
           profileUsed: diagnostic.profileUsed,
           pagesProcessed: diagnostic.pagesProcessed,
           textLength: diagnostic.textLength,
@@ -586,6 +593,8 @@ export async function POST(request: Request) {
           qualityStatus: diagnostic.qualityStatus,
           reason: diagnostic.reason,
           warnings: diagnostic.warnings,
+          visualStructuringProvider:
+            diagnostic.visualStructuringProvider,
           canDownloadRawText: diagnostic.canDownloadRawText,
           rawTextContent: diagnostic.rawTextContent,
           rawTextFileName: createRawTextFileName(originalFileName),
@@ -766,6 +775,7 @@ async function successResponse(
       totalRegistros: number;
     };
     rowsExtracted?: number;
+    visualStructuringProvider?: string;
   },
   startedAt: number,
   rateLimit: RateLimitResult,
@@ -813,6 +823,7 @@ async function successResponse(
     qualityStatus: result.qualityStatus,
     pagesProcessed: result.pagesProcessed,
     rowsExtracted: result.rowsExtracted ?? result.extractedRows,
+    visualStructuringProvider: result.visualStructuringProvider,
     warnings: [...(result.profileValidationWarnings ?? []), ...(result.warnings ?? [])],
   });
   const jsonContent = JSON.stringify({ metadata, columns: jsonColumns, rows: jsonRows }, null, 2);
@@ -855,6 +866,7 @@ async function successResponse(
       extractionType: result.extractionType ?? context.clientProfile?.userFacingExtractionType,
       resultQuality: result.resultQuality,
       providerUsed: result.providerUsed,
+      visualStructuringProvider: result.visualStructuringProvider,
       qualityStatus: result.qualityStatus,
       confidence: result.confidence,
       warnings: result.warnings,

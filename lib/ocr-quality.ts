@@ -343,6 +343,13 @@ function estimateConfidence(
   rows: Record<string, string>[],
   profile?: ClientProfile,
 ) {
+  if (
+    typeof result.providerConfidence === "number" &&
+    Number.isFinite(result.providerConfidence)
+  ) {
+    return roundConfidence(result.providerConfidence);
+  }
+
   const explicitConfidence = collectExplicitConfidence(result.jsonRows ?? rows);
 
   if (explicitConfidence.length > 0) {

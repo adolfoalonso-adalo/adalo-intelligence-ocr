@@ -335,6 +335,7 @@ Antes de aceptar un resultado, el servidor ejecuta:
 2. Proveedor OCR primario: por defecto `google-ai`, que usa el flujo actual con Gemini/Gemma configurables.
 3. Quality gate: valida que la salida cumpla el perfil, columnas esperadas, filas utiles, confianza minima y ausencia de texto corrupto o marcas de escaneo como datos.
 4. Fallback avanzado: si el resultado no pasa calidad y `OCR_ENABLE_FALLBACK="true"`, se intenta Google Document AI cuando esta configurado.
+5. Estructuracion visual multimodal: si Document AI recupera texto pero no detecta tablas confiables, o su estructura no supera el quality gate, puede usarse OpenAI como fallback visual opcional. El resultado vuelve a pasar por el mismo quality gate antes de generar CSV/JSON.
 
 La interfaz interna de proveedores permite mantener Google AI como motor principal y usar Google Document AI para OCR avanzado de PDFs escaneados:
 
@@ -355,6 +356,15 @@ OCR_FALLBACK_PROVIDER="google-document-ai"
 OCR_ADVANCED_PROVIDER="google-document-ai"
 OCR_ENABLE_FALLBACK="true"
 OCR_MIN_CONFIDENCE="0.75"
+OCR_FALLBACK_MULTIMODAL_PROVIDER="openai"
+OCR_ENABLE_MULTIMODAL_FALLBACK="true"
+OCR_MULTIMODAL_TIMEOUT_SECONDS="60"
+OCR_MULTIMODAL_MAX_PAGES="4"
+OCR_MULTIMODAL_MAX_IMAGE_WIDTH="2000"
+OCR_MULTIMODAL_MAX_OCR_TEXT_CHARS="30000"
+OPENAI_API_KEY=""
+OPENAI_VISUAL_MODEL="gpt-5.4-mini"
+OPENAI_VISUAL_MAX_OUTPUT_TOKENS="12000"
 GOOGLE_CLOUD_PROJECT_ID=""
 GOOGLE_DOCUMENT_AI_LOCATION="us"
 GOOGLE_DOCUMENT_AI_PROCESSOR_ID=""
@@ -399,6 +409,33 @@ Cuando el preprocesamiento detecta un PDF escaneado, Document AI se intenta ante
 
 Si el flujo principal devuelve la extraccion generica `Pagina`, `Linea`, `Texto`, el quality gate la deriva a Document AI. Con `google-document-ai` configurado como fallback, esa salida basica no se marca como exito si el proveedor avanzado no logra producir una estructura aceptable.
 
+### Fallback visual multimodal con OpenAI
+
+Google Document AI sigue siendo el OCR documental principal. OpenAI no lo reemplaza: se usa solamente para reconstruir visualmente columnas y filas cuando existe texto OCR, pero faltan tablas explicitas, la alineacion es deficiente, hay rotacion o la primera normalizacion queda por debajo del umbral.
+
+Flujo:
+
+1. Google Document AI recupera texto y estructura visual.
+2. El clasificador interno selecciona el perfil.
+3. Gemini o los extractores deterministas intentan estructurar.
+4. Si la salida no es confiable y el documento es elegible, OpenAI recibe paginas renderizadas o la imagen, el texto OCR de apoyo, el perfil y las columnas esperadas.
+5. La respuesta JSON se normaliza en servidor y pasa por el mismo quality gate.
+6. Solo si supera calidad se genera CSV/JSON con `extractionMode="multimodal_structured"`.
+
+Para activarlo:
+
+```env
+OPENAI_API_KEY="..."
+OCR_FALLBACK_MULTIMODAL_PROVIDER="openai"
+OCR_ENABLE_MULTIMODAL_FALLBACK="true"
+```
+
+`OCR_MULTIMODAL_MAX_PAGES` limita cuantas paginas se envian al fallback visual. Si faltan estas variables, la integracion queda deshabilitada y no rompe el build ni el flujo existente.
+
+`OCR_VISUAL_STRUCTURING_PROVIDER="openai"` se acepta como alias de compatibilidad, aunque la variable recomendada es `OCR_FALLBACK_MULTIMODAL_PROVIDER`.
+
+Los logs registran solamente proveedor, cantidad de paginas, perfil interno, score, filas, uso del fallback y cantidad de advertencias. No se registran claves, imagenes base64, texto OCR completo ni datos personales completos.
+
 Configuracion minima:
 
 1. Crear un processor en Google Cloud Document AI.
@@ -408,7 +445,7 @@ Configuracion minima:
 
 En produccion, las credenciales deben configurarse como secreto del entorno y nunca incluirse en el repositorio.
 
-La metadata JSON puede incluir `primaryProvider`, `fallbackProvider`, `providerUsed`, `profileCode`, `profileName`, `extractionMode`, `confidence`, `qualityStatus`, `warnings`, `pagesProcessed` y `rowsExtracted`.
+La metadata JSON puede incluir `primaryProvider`, `fallbackProvider`, `providerUsed`, `visualStructuringProvider`, `profileCode`, `profileName`, `extractionMode`, `confidence`, `qualityStatus`, `warnings`, `pagesProcessed` y `rowsExtracted`.
 
 Estados de calidad:
 

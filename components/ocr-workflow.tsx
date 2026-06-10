@@ -74,6 +74,8 @@ type ProcessResponse = {
   technicalDetail?: string;
   providerUsed?: string;
   fallbackUsed?: boolean;
+  multimodalFallbackAttempted?: boolean;
+  visualStructuringProvider?: string;
   profileUsed?: string;
   pagesProcessed?: number;
   textLength?: number;
@@ -90,6 +92,8 @@ type ProcessResponse = {
 export type OcrTextOnlyDiagnostic = {
   providerUsed?: string;
   fallbackUsed?: boolean;
+  multimodalFallbackAttempted?: boolean;
+  visualStructuringProvider?: string;
   profileUsed?: string;
   pagesProcessed?: number;
   textLength?: number;
@@ -317,6 +321,10 @@ export function OcrWorkflow({
         setTextOnlyDiagnostic({
           providerUsed: data.providerUsed,
           fallbackUsed: data.fallbackUsed,
+          multimodalFallbackAttempted:
+            data.multimodalFallbackAttempted,
+          visualStructuringProvider:
+            data.visualStructuringProvider,
           profileUsed:
             allowProfileTesting && accessMode === "master"
               ? data.profileUsed
@@ -696,9 +704,23 @@ function getEstimatedOcrProgress({
       stage: "structuring" as const,
     },
     {
+      currentStep: "Intentando interpretación visual avanzada…",
+      debugStage: "multimodal-fallback:start",
+      detailMessage:
+        "Si la estructura inicial no alcanza, analizamos visualmente las páginas relevantes.",
+      stage: "structuring" as const,
+    },
+    {
+      currentStep: "Reconstruyendo columnas desde la imagen…",
+      debugStage: "multimodal-fallback:structuring",
+      detailMessage:
+        "Estamos contrastando la disposición visual con el texto OCR recuperado.",
+      stage: "structuring" as const,
+    },
+    {
       currentStep: "Validando confiabilidad de los resultados…",
-      debugStage: "quality-gate:start",
-      detailMessage: "Revisando completitud de columnas, filas y campos clave.",
+      debugStage: "multimodal-fallback:quality-gate",
+      detailMessage: "Validando estructura generada, filas y campos clave.",
       stage: "quality" as const,
     },
     {
@@ -830,6 +852,7 @@ function formatPercentage(value: number) {
 
 function formatExtractionMode(value?: string) {
   if (value === "vision_table") return "OCR visual tabular";
+  if (value === "multimodal_structured") return "Interpretación visual avanzada";
   if (value === "text_chunks") return "Texto por chunks";
   if (value === "direct_file") return "Archivo directo";
   return "Motor ADALO";

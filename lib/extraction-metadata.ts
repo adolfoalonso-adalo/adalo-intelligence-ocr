@@ -21,6 +21,7 @@ export type ExtractionMetadataInput = {
   qualityStatus?: string;
   records: number;
   rowsExtracted?: number;
+  visualStructuringProvider?: string;
   warnings?: string[];
 };
 
@@ -47,6 +48,7 @@ export type ExtractionMetadata = {
   qualityStatus?: string;
   records: number;
   rowsExtracted?: number;
+  visualStructuringProvider?: string;
   warnings: string[];
 };
 
@@ -73,6 +75,7 @@ export function createExtractionMetadata({
   qualityStatus,
   records,
   rowsExtracted,
+  visualStructuringProvider,
   warnings = [],
 }: ExtractionMetadataInput): ExtractionMetadata {
   return {
@@ -98,6 +101,7 @@ export function createExtractionMetadata({
     qualityStatus,
     records,
     rowsExtracted,
+    visualStructuringProvider,
     warnings,
   };
 }

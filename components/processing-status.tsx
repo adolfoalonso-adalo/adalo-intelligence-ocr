@@ -91,6 +91,10 @@ function OcrDiagnosticDetails({
         : undefined,
     ],
     ["Fallback avanzado", diagnostic.fallbackUsed ? "Si" : "No"],
+    [
+      "Interpretacion visual avanzada",
+      diagnostic.multimodalFallbackAttempted ? "Intentada" : undefined,
+    ],
     ["Motivo", diagnostic.reason],
   ].filter((item): item is [string, string] => Boolean(item[1]));
 

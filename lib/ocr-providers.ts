@@ -44,6 +44,7 @@ export type OCRProviderInput = {
 };
 
 export type OCRProviderResult = CsvAnalysisResult & {
+  documentAiDetectedTables?: boolean;
   internalProfile?: ClientProfile;
   providerUsed: OCRProviderName;
   rawTextContent?: string;
@@ -294,6 +295,7 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
     } catch (error) {
       throw new OCRTextOnlyError({
         canDownloadRawText: true,
+        documentAiDetectedTables: Boolean(tablesText),
         extractionMode: "ocr_text_only",
         fallbackUsed: false,
         pagesProcessed: document.pages?.length ?? 0,
@@ -316,6 +318,7 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
 
     return {
       ...normalizeProviderResultForProfile(normalized, classification.profile),
+      documentAiDetectedTables: Boolean(tablesText),
       internalProfile: classification.profile,
       providerUsed: this.name,
       rawTextContent,

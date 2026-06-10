@@ -43,7 +43,9 @@ export type CsvAnalysisResult = {
   resultQuality?: "ai" | "partial" | "local-fallback";
   extractionMode?: string;
   pagesProcessed?: number;
+  providerConfidence?: number;
   rowsExtracted?: number;
+  visualStructuringProvider?: string;
   warnings?: string[];
   personnelQualityMetrics?: {
     filasConCUIL: number;

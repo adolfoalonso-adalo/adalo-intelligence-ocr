@@ -1,5 +1,6 @@
 import {
   getClientProfileCode,
+  getClientProfileById,
   isVisionTableProfile,
   resolveDocumentTypeForProfile,
   type ClientProfile,
@@ -24,6 +25,10 @@ import {
   type OCRProviderName,
   type OCRProviderResult,
 } from "@/lib/ocr-providers";
+import {
+  runOpenAiVisualStructuring,
+  shouldAttemptOpenAiVisualFallback,
+} from "@/lib/openai-visual-structuring";
 
 export type OrchestratedOCRResult = CsvAnalysisResult & {
   confidence?: number;
@@ -36,6 +41,7 @@ export type OrchestratedOCRResult = CsvAnalysisResult & {
   providerUsed?: OCRProviderName;
   qualityStatus?: OCRQualityStatus;
   rowsExtracted?: number;
+  visualStructuringProvider?: string;
   warnings?: string[];
 };
 
@@ -173,9 +179,34 @@ export async function runOcrExtraction(input: {
     }
 
     if (primaryError instanceof OCRTextOnlyError) {
+      const visualAttempt = await tryOpenAiVisualFallback({
+        documentAiDetectedTables:
+          primaryError.diagnostic.documentAiDetectedTables,
+        input: effectiveInput,
+        pagesProcessed: primaryError.diagnostic.pagesProcessed,
+        preprocessing,
+        primaryProviderName: primaryProvider.name,
+        profile: getClientProfileById(primaryError.diagnostic.profileUsed),
+        rawTextContent: primaryError.diagnostic.rawTextContent,
+        sourceProviderName: primaryProvider.name,
+        fallbackProviderName: fallbackProvider.name,
+      });
+
+      if (visualAttempt.result) {
+        return visualAttempt.result;
+      }
+
       const primaryTextOnlyError = withOCRTextOnlyContext(primaryError, {
         fallbackUsed: false,
+        multimodalFallbackAttempted: visualAttempt.attempted,
         providerUsed: primaryProvider.name,
+        visualStructuringProvider: visualAttempt.attempted
+          ? "openai"
+          : undefined,
+        warnings: [
+          ...primaryError.diagnostic.warnings,
+          ...visualAttempt.warnings,
+        ],
       });
 
       if (fallbackEnabled && fallbackProvider.name !== primaryProvider.name) {
@@ -230,6 +261,47 @@ export async function runOcrExtraction(input: {
       pagesProcessed: preprocessing.pagesProcessed,
       primaryProvider: primaryProvider.name,
       profile: resultProfile,
+    });
+  }
+
+  if (primaryProvider.name === "google-document-ai" && primaryResult.rawTextContent) {
+    const visualAttempt = await tryOpenAiVisualFallback({
+      documentAiDetectedTables: primaryResult.documentAiDetectedTables,
+      input: effectiveInput,
+      pagesProcessed: primaryResult.pagesProcessed ?? preprocessing.pagesProcessed,
+      preprocessing,
+      primaryProviderName: primaryProvider.name,
+      profile: resultProfile,
+      rawTextContent: primaryResult.rawTextContent,
+      sourceProviderName: primaryProvider.name,
+      fallbackProviderName: fallbackProvider.name,
+    });
+
+    if (visualAttempt.result) {
+      return visualAttempt.result;
+    }
+
+    throw new OCRTextOnlyError({
+      canDownloadRawText: true,
+      documentAiDetectedTables: primaryResult.documentAiDetectedTables,
+      extractionMode: "ocr_text_only",
+      fallbackUsed: false,
+      multimodalFallbackAttempted: visualAttempt.attempted,
+      pagesProcessed: primaryResult.pagesProcessed ?? preprocessing.pagesProcessed,
+      profileUsed: getClientProfileCode(resultProfile),
+      providerUsed: primaryProvider.name,
+      qualityScore: primaryAssessment.confidence,
+      qualityStatus: primaryAssessment.requiresManualReview
+        ? "manual_review_required"
+        : "failed_quality_gate",
+      rawTextContent: primaryResult.rawTextContent,
+      reason: primaryAssessment.reason,
+      textLength: primaryResult.textLength ?? primaryResult.rawTextContent.length,
+      visualStructuringProvider: visualAttempt.attempted ? "openai" : undefined,
+      warnings: [
+        ...primaryAssessment.warnings,
+        ...visualAttempt.warnings,
+      ],
     });
   }
 
@@ -369,9 +441,33 @@ async function runFallbackProviderOrThrow({
     });
   } catch (error) {
     if (error instanceof OCRTextOnlyError) {
+      const visualAttempt = await tryOpenAiVisualFallback({
+        documentAiDetectedTables: error.diagnostic.documentAiDetectedTables,
+        fallbackProviderName: fallbackProvider.name,
+        input,
+        pagesProcessed: error.diagnostic.pagesProcessed || pagesProcessed,
+        preprocessing,
+        primaryProviderName,
+        profile: getClientProfileById(error.diagnostic.profileUsed),
+        rawTextContent: error.diagnostic.rawTextContent,
+        sourceProviderName: fallbackProvider.name,
+      });
+
+      if (visualAttempt.result) {
+        return visualAttempt.result;
+      }
+
       throw withOCRTextOnlyContext(error, {
         fallbackUsed: fallbackProvider.name !== primaryProviderName,
+        multimodalFallbackAttempted: visualAttempt.attempted,
         providerUsed: fallbackProvider.name,
+        visualStructuringProvider: visualAttempt.attempted
+          ? "openai"
+          : undefined,
+        warnings: [
+          ...error.diagnostic.warnings,
+          ...visualAttempt.warnings,
+        ],
       });
     }
 
@@ -379,6 +475,8 @@ async function runFallbackProviderOrThrow({
   }
   const fallbackProfile = fallbackResult.internalProfile ?? input.clientProfile;
   const fallbackAssessment = assessOCRQuality(fallbackResult, fallbackProfile, preprocessing);
+  let multimodalFallbackAttempted = false;
+  let multimodalWarnings: string[] = [];
   logOCRQualityAssessment({
     assessment: fallbackAssessment,
     profile: fallbackProfile,
@@ -396,11 +494,39 @@ async function runFallbackProviderOrThrow({
     });
   }
 
+  if (
+    fallbackProvider.name === "google-document-ai" &&
+    fallbackResult.rawTextContent
+  ) {
+    const visualAttempt = await tryOpenAiVisualFallback({
+      documentAiDetectedTables: fallbackResult.documentAiDetectedTables,
+      fallbackProviderName: fallbackProvider.name,
+      input,
+      pagesProcessed: fallbackResult.pagesProcessed ?? pagesProcessed,
+      preprocessing,
+      primaryProviderName,
+      profile: fallbackProfile,
+      rawTextContent: fallbackResult.rawTextContent,
+      sourceProviderName: fallbackProvider.name,
+    });
+
+    if (visualAttempt.result) {
+      return visualAttempt.result;
+    }
+
+    if (visualAttempt.attempted) {
+      multimodalFallbackAttempted = true;
+      multimodalWarnings = visualAttempt.warnings;
+    }
+  }
+
   if (fallbackResult.rawTextContent) {
     throw new OCRTextOnlyError({
       canDownloadRawText: true,
+      documentAiDetectedTables: fallbackResult.documentAiDetectedTables,
       extractionMode: "ocr_text_only",
       fallbackUsed: fallbackProvider.name !== primaryProviderName,
+      multimodalFallbackAttempted,
       pagesProcessed: fallbackResult.pagesProcessed ?? pagesProcessed,
       profileUsed: getClientProfileCode(fallbackProfile),
       providerUsed: fallbackProvider.name,
@@ -411,7 +537,13 @@ async function runFallbackProviderOrThrow({
       rawTextContent: fallbackResult.rawTextContent,
       reason: fallbackAssessment.reason,
       textLength: fallbackResult.textLength ?? fallbackResult.rawTextContent.length,
-      warnings: fallbackAssessment.warnings,
+      visualStructuringProvider: multimodalFallbackAttempted
+        ? "openai"
+        : undefined,
+      warnings: [
+        ...fallbackAssessment.warnings,
+        ...multimodalWarnings,
+      ],
     });
   }
 
@@ -419,6 +551,136 @@ async function runFallbackProviderOrThrow({
     "La extraccion no alcanzo la calidad minima requerida.",
     `OCR_FALLBACK_QUALITY_GATE_FAILED: ${fallbackAssessment.reason}; primary=${summarizeError(primaryError)}`,
   );
+}
+
+async function tryOpenAiVisualFallback(input: {
+  documentAiDetectedTables?: boolean;
+  fallbackProviderName: OCRProviderName;
+  input: {
+    clientProfile?: ClientProfile;
+    documentType: DocumentType;
+    fileBuffer: Buffer;
+    fileName: string;
+    mimeType: string;
+  };
+  pagesProcessed: number;
+  preprocessing: Awaited<ReturnType<typeof analyzeDocumentForOcr>>;
+  primaryProviderName: OCRProviderName;
+  profile?: ClientProfile;
+  rawTextContent: string;
+  sourceProviderName: OCRProviderName;
+}): Promise<{
+  attempted: boolean;
+  result: OrchestratedOCRResult | null;
+  warnings: string[];
+}> {
+  const eligible =
+    input.sourceProviderName === "google-document-ai" &&
+    shouldAttemptOpenAiVisualFallback({
+      documentAiDetectedTables: input.documentAiDetectedTables,
+      mimeType: input.input.mimeType,
+      preprocessing: input.preprocessing,
+      qualityGateFailed: true,
+      rawTextContent: input.rawTextContent,
+    });
+
+  if (!eligible) {
+    return {
+      attempted: false,
+      result: null,
+      warnings: [],
+    };
+  }
+
+  console.info("[OCR] multimodal fallback selected", {
+    provider: "openai",
+    pagesAnalyzed: input.pagesProcessed,
+    profileUsed: getClientProfileCode(input.profile),
+    fallbackUsed: true,
+    reason: input.documentAiDetectedTables
+      ? "Document AI structure did not pass quality gate"
+      : "Document AI recovered text without explicit tables",
+  });
+
+  try {
+    const visualResult = await runOpenAiVisualStructuring({
+      documentType: input.input.documentType,
+      fileBuffer: input.input.fileBuffer,
+      fileName: input.input.fileName,
+      mimeType: input.input.mimeType,
+      pagesProcessed: input.pagesProcessed,
+      preprocessing: input.preprocessing,
+      profile: input.profile,
+      rawTextContent: input.rawTextContent,
+    });
+    const providerResult: OCRProviderResult = {
+      ...visualResult,
+      documentAiDetectedTables: input.documentAiDetectedTables,
+      internalProfile: input.profile,
+      providerUsed: "google-document-ai",
+      rawTextContent: input.rawTextContent,
+      textLength: input.rawTextContent.length,
+    };
+    const assessment = assessOCRQuality(
+      providerResult,
+      input.profile,
+      input.preprocessing,
+    );
+
+    logOCRQualityAssessment({
+      assessment,
+      profile: input.profile,
+      providerUsed: "openai-visual-structuring",
+      rowsExtracted: providerResult.extractedRows,
+    });
+
+    console.info("[OCR] multimodal fallback quality", {
+      provider: "openai",
+      pagesAnalyzed: providerResult.pagesProcessed ?? input.pagesProcessed,
+      profileUsed: getClientProfileCode(input.profile),
+      qualityScore: assessment.confidence,
+      qualityStatus: assessment.qualityStatus,
+      rowsExtracted: providerResult.extractedRows,
+      fallbackUsed: true,
+      warnings: assessment.warnings.length,
+    });
+
+    if (!assessment.acceptable) {
+      return {
+        attempted: true,
+        result: null,
+        warnings: [
+          `La interpretacion visual avanzada no supero calidad: ${assessment.reason}`,
+        ],
+      };
+    }
+
+    return {
+      attempted: true,
+      result: enrichOCRResult(providerResult, {
+        assessment,
+        fallbackProvider: input.fallbackProviderName,
+        pagesProcessed: providerResult.pagesProcessed ?? input.pagesProcessed,
+        primaryProvider: input.primaryProviderName,
+        profile: input.profile,
+      }),
+      warnings: [],
+    };
+  } catch (error) {
+    console.warn("[OCR] multimodal fallback failed", {
+      provider: "openai",
+      pagesAnalyzed: input.pagesProcessed,
+      profileUsed: getClientProfileCode(input.profile),
+      fallbackUsed: true,
+      errorName: error instanceof Error ? error.name : typeof error,
+    });
+
+    return {
+      attempted: true,
+      result: null,
+      warnings: ["La interpretacion visual avanzada no pudo completarse."],
+    };
+  }
 }
 
 function enrichOCRResult(

@@ -1,7 +1,9 @@
 export type OCRTextOnlyDiagnostic = {
   canDownloadRawText: true;
+  documentAiDetectedTables?: boolean;
   extractionMode: "ocr_text_only";
   fallbackUsed: boolean;
+  multimodalFallbackAttempted?: boolean;
   pagesProcessed: number;
   profileUsed: string;
   providerUsed: string;
@@ -10,6 +12,7 @@ export type OCRTextOnlyDiagnostic = {
   rawTextContent: string;
   reason: string;
   textLength: number;
+  visualStructuringProvider?: string;
   warnings: string[];
 };
 
@@ -28,7 +31,15 @@ export function withOCRTextOnlyContext(
   context: Partial<
     Pick<
       OCRTextOnlyDiagnostic,
-      "fallbackUsed" | "profileUsed" | "providerUsed" | "qualityScore" | "qualityStatus" | "reason"
+      | "fallbackUsed"
+      | "multimodalFallbackAttempted"
+      | "profileUsed"
+      | "providerUsed"
+      | "qualityScore"
+      | "qualityStatus"
+      | "reason"
+      | "visualStructuringProvider"
+      | "warnings"
     >
   >,
 ) {
