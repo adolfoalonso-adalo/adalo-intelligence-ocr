@@ -37,6 +37,20 @@ type PersonnelQualityMetrics = {
   totalRegistros: number;
 };
 
+type CompanyPersonnelQualityMetrics = {
+  cuitsDetectados: number;
+  dnisDetectados: number;
+  empresasDetectadas: number;
+  filasConCUIT: number;
+  filasConDNI: number;
+  filasConEmpresa: number;
+  filasConLocalidad: number;
+  filasConNombre: number;
+  filasConProvincia: number;
+  porcentajeCompletitud: number;
+  registrosEstructurados: number;
+};
+
 type ProcessingProgressState = {
   currentStep: string;
   debugStage?: string;
@@ -87,6 +101,8 @@ type ProcessResponse = {
   rawTextContent?: string;
   rawTextFileName?: string;
   personnelQualityMetrics?: PersonnelQualityMetrics;
+  companyPersonnelQualityMetrics?: CompanyPersonnelQualityMetrics;
+  orientationSelected?: number;
 };
 
 export type OcrTextOnlyDiagnostic = {
@@ -103,6 +119,8 @@ export type OcrTextOnlyDiagnostic = {
   warnings?: string[];
   rawTextContent?: string;
   rawTextFileName?: string;
+  companyPersonnelQualityMetrics?: CompanyPersonnelQualityMetrics;
+  orientationSelected?: number;
 };
 
 type TestProfileId = "general" | "mateo" | "movimiento" | "technical-admin";
@@ -141,6 +159,8 @@ export function OcrWorkflow({
     resultQuality?: ResultQuality;
     durationMs?: number;
     personnelQualityMetrics?: PersonnelQualityMetrics;
+    companyPersonnelQualityMetrics?: CompanyPersonnelQualityMetrics;
+    orientationSelected?: number;
   } | null>(null);
   const parsedResult = result ? parseCsvPreview(result.csvContent) : null;
   const showProcessingProgress =
@@ -337,6 +357,9 @@ export function OcrWorkflow({
           warnings: data.warnings,
           rawTextContent: data.rawTextContent,
           rawTextFileName: data.rawTextFileName,
+          companyPersonnelQualityMetrics:
+            data.companyPersonnelQualityMetrics,
+          orientationSelected: data.orientationSelected,
         });
         setError(data.error || "No pudimos estructurar el archivo");
         setTechnicalDetail(data.technicalDetail || "");
@@ -373,6 +396,9 @@ export function OcrWorkflow({
         resultQuality: data.resultQuality,
         durationMs: data.durationMs,
         personnelQualityMetrics: data.personnelQualityMetrics,
+        companyPersonnelQualityMetrics:
+          data.companyPersonnelQualityMetrics,
+        orientationSelected: data.orientationSelected,
       });
       setProgress({
         currentStep: "Procesamiento completado",
@@ -517,6 +543,33 @@ export function OcrWorkflow({
             {result.personnelQualityMetrics.filasConProvincia} con provincia
             {" · "}
             {formatPercentage(result.personnelQualityMetrics.porcentajeCompletitud)} de completitud
+          </p>
+        </div>
+      ) : null}
+
+      {result?.companyPersonnelQualityMetrics && status === "done" ? (
+        <div className="rounded-2xl border border-brand-border bg-brand-card px-4 py-3 text-center text-xs leading-5 text-brand-slate">
+          <p className="font-semibold text-brand-deep">
+            Diagnóstico del listado de personal
+          </p>
+          <p className="mt-1">
+            Tipo detectado: Listado de personal por empresa/localidad
+            {" · "}
+            Orientación seleccionada: {result.orientationSelected ?? 0}°
+          </p>
+          <p>
+            {result.companyPersonnelQualityMetrics.empresasDetectadas} empresa(s)
+            {" · "}
+            {result.companyPersonnelQualityMetrics.cuitsDetectados} CUIT
+            {" · "}
+            {result.companyPersonnelQualityMetrics.dnisDetectados} DNI
+            {" · "}
+            {result.companyPersonnelQualityMetrics.registrosEstructurados} registros
+          </p>
+          <p>
+            {formatPercentage(
+              result.companyPersonnelQualityMetrics.porcentajeCompletitud,
+            )} de completitud
           </p>
         </div>
       ) : null}

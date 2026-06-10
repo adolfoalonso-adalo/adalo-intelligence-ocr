@@ -90,6 +90,40 @@ function OcrDiagnosticDetails({
         ? `${Math.round(diagnostic.qualityScore * 100)}%`
         : undefined,
     ],
+    [
+      "Orientacion seleccionada",
+      typeof diagnostic.orientationSelected === "number"
+        ? `${diagnostic.orientationSelected}°`
+        : undefined,
+    ],
+    [
+      "Empresas detectadas",
+      diagnostic.companyPersonnelQualityMetrics
+        ? String(
+            diagnostic.companyPersonnelQualityMetrics.empresasDetectadas,
+          )
+        : undefined,
+    ],
+    [
+      "CUIT detectados",
+      diagnostic.companyPersonnelQualityMetrics
+        ? String(diagnostic.companyPersonnelQualityMetrics.cuitsDetectados)
+        : undefined,
+    ],
+    [
+      "DNI detectados",
+      diagnostic.companyPersonnelQualityMetrics
+        ? String(diagnostic.companyPersonnelQualityMetrics.dnisDetectados)
+        : undefined,
+    ],
+    [
+      "Registros estructurados",
+      diagnostic.companyPersonnelQualityMetrics
+        ? String(
+            diagnostic.companyPersonnelQualityMetrics.registrosEstructurados,
+          )
+        : undefined,
+    ],
     ["Fallback avanzado", diagnostic.fallbackUsed ? "Si" : "No"],
     [
       "Interpretacion visual avanzada",

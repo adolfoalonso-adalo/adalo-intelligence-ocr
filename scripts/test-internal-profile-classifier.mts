@@ -7,6 +7,25 @@ const personnel = classifyInternalOCRProfile({
 });
 assert.equal(personnel.profile.id, "internal-nomina-personal");
 
+const companyPersonnel = classifyInternalOCRProfile({
+  text: `
+AGV FALCON DRILLING S.R.L
+30-71235052-7
+FLORES, CLAUDIO GONZALO
+28695666
+Salta
+CHICOANA
+PEREZ, MARIA ELENA
+30111222
+Salta
+CERRILLOS
+`,
+});
+assert.equal(
+  companyPersonnel.profile.id,
+  "internal-personal-empresa-localidad",
+);
+
 const movement = classifyInternalOCRProfile({
   text: "FechaSalida CantidadCamion Proveedor Producto Origen Destino FechaArribo",
 });

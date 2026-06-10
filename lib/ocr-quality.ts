@@ -1,9 +1,14 @@
 import type { ClientProfile } from "@/lib/client-profiles";
 import {
   getClientProfileCode,
+  isCompanyPersonnelProfile,
   isPersonnelRosterProfile,
   isVisionTableProfile,
 } from "@/lib/client-profiles";
+import {
+  assessCompanyPersonnelRows,
+  COMPANY_PERSONNEL_COLUMNS,
+} from "@/lib/company-personnel-pattern";
 import { parseCsvPreview } from "@/lib/csv-preview";
 import type { DocumentPreprocessingResult } from "@/lib/document-preprocessing";
 import type { CsvAnalysisResult } from "@/lib/google-ai";
@@ -67,6 +72,14 @@ export function assessOCRQuality(
     });
   }
 
+  if (isCompanyPersonnelProfile(profile)) {
+    return assessCompanyPersonnelResult({
+      columns,
+      rows,
+      warnings,
+    });
+  }
+
   const structuredQuality = assessExtractionQuality(columns, rows, {
     clientProfileId: profile?.id,
     documentType:
@@ -120,6 +133,74 @@ export function assessOCRQuality(
     requiresManualReview: false,
     shouldFallback: false,
     warnings,
+  };
+}
+
+function assessCompanyPersonnelResult({
+  columns,
+  rows,
+  warnings,
+}: {
+  columns: string[];
+  rows: Record<string, string>[];
+  warnings: string[];
+}): OCRQualityAssessment {
+  const normalizedColumns = columns.map(normalizeColumn);
+  const missingColumns = COMPANY_PERSONNEL_COLUMNS.filter(
+    (column) => !normalizedColumns.includes(normalizeColumn(column)),
+  );
+  const hasGenericLineCsv = ["pagina", "linea", "texto"].every((column) =>
+    normalizedColumns.includes(column),
+  );
+  const rowAssessment = assessCompanyPersonnelRows(rows);
+
+  if (hasGenericLineCsv) {
+    return createAssessment({
+      confidence: rowAssessment.qualityScore,
+      qualityStatus: "fallback_required",
+      reason:
+        "Generic Pagina/Linea/Texto output is not valid for company personnel lists",
+      warnings,
+    });
+  }
+
+  if (missingColumns.length > 0) {
+    return createAssessment({
+      confidence: rowAssessment.qualityScore,
+      qualityStatus: "fallback_required",
+      reason: `Company personnel columns missing: ${missingColumns.join(", ")}`,
+      warnings,
+    });
+  }
+
+  if (!rowAssessment.acceptable) {
+    return createAssessment({
+      confidence: rowAssessment.qualityScore,
+      qualityStatus: "fallback_required",
+      reason:
+        `Company personnel pattern quality ${rowAssessment.qualityScore.toFixed(2)} did not meet its profile gate`,
+      warnings,
+    });
+  }
+
+  const profileWarnings = [
+    ...warnings,
+    ...(rowAssessment.metrics.filasConProvincia < rows.length
+      ? [
+          `${rows.length - rowAssessment.metrics.filasConProvincia} fila(s) requieren revision de provincia.`,
+        ]
+      : []),
+  ];
+
+  return {
+    acceptable: true,
+    confidence: rowAssessment.qualityScore,
+    qualityStatus:
+      profileWarnings.length > 0 ? "completed_with_warnings" : "completed",
+    reason: "Company personnel pattern quality gate passed",
+    requiresManualReview: false,
+    shouldFallback: false,
+    warnings: profileWarnings,
   };
 }
 
@@ -363,6 +444,10 @@ function estimateConfidence(
     columns.length >= 6
   ) {
     return assessPersonnelRosterRows(rows).qualityScore;
+  }
+
+  if (isCompanyPersonnelProfile(profile) && columns.length >= 6) {
+    return assessCompanyPersonnelRows(rows).qualityScore;
   }
 
   const structuredQuality = assessExtractionQuality(columns, rows, {

@@ -1,9 +1,23 @@
 export type OCRTextOnlyDiagnostic = {
   canDownloadRawText: true;
+  companyPersonnelQualityMetrics?: {
+    cuitsDetectados: number;
+    dnisDetectados: number;
+    empresasDetectadas: number;
+    filasConCUIT: number;
+    filasConDNI: number;
+    filasConEmpresa: number;
+    filasConLocalidad: number;
+    filasConNombre: number;
+    filasConProvincia: number;
+    porcentajeCompletitud: number;
+    registrosEstructurados: number;
+  };
   documentAiDetectedTables?: boolean;
   extractionMode: "ocr_text_only";
   fallbackUsed: boolean;
   multimodalFallbackAttempted?: boolean;
+  orientationSelected?: number;
   pagesProcessed: number;
   profileUsed: string;
   providerUsed: string;

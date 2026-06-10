@@ -255,4 +255,60 @@ const personnelGenericGate = assessOCRQuality(
 assert.equal(personnelGenericGate.acceptable, false);
 assert.equal(personnelGenericGate.shouldFallback, true);
 
+const companyPersonnelProfile = getClientProfileById(
+  "internal-personal-empresa-localidad",
+);
+const companyPersonnelRows = Array.from({ length: 10 }, (_, index) => ({
+  Empresa: "AGV FALCON DRILLING S.R.L",
+  CUIT: "30-71235052-7",
+  NombreApellido: [
+    "FLORES CLAUDIO",
+    "PEREZ MARIA",
+    "GOMEZ JUAN",
+    "RODRIGUEZ ANA",
+    "DIAZ PEDRO",
+    "SUAREZ LAURA",
+    "MAMANI OSCAR",
+    "LOPEZ CARLA",
+    "FERNANDEZ DIEGO",
+    "SOSA JULIETA",
+  ][index],
+  DNI: String(20000000 + index),
+  Provincia: "Salta",
+  Localidad: "Chicoana",
+}));
+const companyPersonnelCsv = [
+  '"Empresa","CUIT","NombreApellido","DNI","Provincia","Localidad"',
+  ...companyPersonnelRows.map((row) =>
+    [
+      row.Empresa,
+      row.CUIT,
+      row.NombreApellido,
+      row.DNI,
+      row.Provincia,
+      row.Localidad,
+    ]
+      .map((value) => `"${value}"`)
+      .join(","),
+  ),
+].join("\n");
+const companyPersonnelGate = assessOCRQuality(
+  {
+    csvContent: companyPersonnelCsv,
+    extractedRows: companyPersonnelRows.length,
+    fileName: "ADALO_OCR_PERSONAL_EMPRESA.csv",
+    modelUsed: "openai visual fallback",
+    providerConfidence: 0.41,
+    resultQuality: "ai",
+  },
+  companyPersonnelProfile,
+);
+
+assert.equal(companyPersonnelGate.acceptable, true);
+assert.equal(
+  companyPersonnelGate.reason,
+  "Company personnel pattern quality gate passed",
+);
+assert.ok(companyPersonnelGate.confidence >= 0.6);
+
 console.log("quality-assessment tests passed");

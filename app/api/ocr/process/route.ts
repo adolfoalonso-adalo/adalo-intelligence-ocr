@@ -586,6 +586,9 @@ export async function POST(request: Request) {
           fallbackUsed: diagnostic.fallbackUsed,
           multimodalFallbackAttempted:
             diagnostic.multimodalFallbackAttempted,
+          orientationSelected: diagnostic.orientationSelected,
+          companyPersonnelQualityMetrics:
+            diagnostic.companyPersonnelQualityMetrics,
           profileUsed: diagnostic.profileUsed,
           pagesProcessed: diagnostic.pagesProcessed,
           textLength: diagnostic.textLength,
@@ -774,6 +777,20 @@ async function successResponse(
       porcentajeCompletitud: number;
       totalRegistros: number;
     };
+    companyPersonnelQualityMetrics?: {
+      cuitsDetectados: number;
+      dnisDetectados: number;
+      empresasDetectadas: number;
+      filasConCUIT: number;
+      filasConDNI: number;
+      filasConEmpresa: number;
+      filasConLocalidad: number;
+      filasConNombre: number;
+      filasConProvincia: number;
+      porcentajeCompletitud: number;
+      registrosEstructurados: number;
+    };
+    orientationSelected?: 0 | 90 | 180 | 270;
     rowsExtracted?: number;
     visualStructuringProvider?: string;
   },
@@ -813,6 +830,7 @@ async function successResponse(
     originalFileName: sourceFileName ?? "",
     outputFileName: fileName,
     outputJsonFileName: jsonFileName,
+    orientationSelected: result.orientationSelected,
     profileCode: result.profileCode ?? getClientProfileCode(context.clientProfile),
     profileName: result.profileName ?? context.clientProfile?.label,
     records: rows.length,
@@ -871,6 +889,9 @@ async function successResponse(
       confidence: result.confidence,
       warnings: result.warnings,
       personnelQualityMetrics: result.personnelQualityMetrics,
+      companyPersonnelQualityMetrics:
+        result.companyPersonnelQualityMetrics,
+      orientationSelected: result.orientationSelected,
       durationMs,
     },
     200,
@@ -895,6 +916,10 @@ function resolveCsvFileKind(
 
   if (result.profileCode === "internal-nomina-personal") {
     return "NOMINA";
+  }
+
+  if (result.profileCode === "internal-personal-empresa-localidad") {
+    return "PERSONAL_EMPRESA";
   }
 
   if (

@@ -1,9 +1,19 @@
 import {
   getClientProfileCode,
+  isCompanyPersonnelProfile,
   isPersonnelRosterProfile,
   resolveDocumentTypeForProfile,
   type ClientProfile,
 } from "@/lib/client-profiles";
+import {
+  COMPANY_PERSONNEL_COLUMNS,
+  calculateCompanyPersonnelMetrics,
+  extractCompanyPersonnelByPattern,
+  hasPotentialCompanyPersonnelSignals,
+  isValidDni,
+  scoreCompanyPersonnelText,
+  type CompanyPersonnelPatternResult,
+} from "@/lib/company-personnel-pattern";
 import { createCsvFileName } from "@/lib/csv";
 import type { DocumentPreprocessingResult } from "@/lib/document-preprocessing";
 import type { DocumentType } from "@/lib/document-type";
@@ -215,14 +225,13 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
       typeof client.processorPath === "function"
         ? client.processorPath(config.projectId, config.location, config.processorId)
         : `projects/${config.projectId}/locations/${config.location}/processors/${config.processorId}`;
-    const [response] = await client.processDocument({
+    const selectedDocument = await selectDocumentAiOrientation({
+      client,
+      fileBuffer: input.fileBuffer,
+      mimeType: input.mimeType,
       name,
-      rawDocument: {
-        content: input.fileBuffer.toString("base64"),
-        mimeType: input.mimeType,
-      },
     });
-    const document = response.document;
+    const document = selectedDocument.document;
 
     if (!document?.text?.trim()) {
       throw new CsvAnalysisError(
@@ -253,6 +262,11 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
     const personnelPattern = isPersonnelRosterProfile(classification.profile)
       ? extractPersonnelRosterByPattern(rawTextContent)
       : null;
+    const companyPersonnelPattern = isCompanyPersonnelProfile(
+      classification.profile,
+    )
+      ? extractCompanyPersonnelByPattern(rawTextContent)
+      : null;
 
     if (personnelPattern) {
       console.info("[OCR] personnel roster pattern assessment", {
@@ -280,6 +294,36 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
       };
     }
 
+    if (companyPersonnelPattern) {
+      console.info("[OCR] company personnel pattern assessment", {
+        profileUsed: getClientProfileCode(classification.profile),
+        providerUsed: this.name,
+        qualityScore: companyPersonnelPattern.qualityScore,
+        companiesDetected:
+          companyPersonnelPattern.metrics.empresasDetectadas,
+        cuitsDetected: companyPersonnelPattern.metrics.cuitsDetectados,
+        dnisDetected: companyPersonnelPattern.metrics.dnisDetectados,
+        rowsExtracted:
+          companyPersonnelPattern.metrics.registrosEstructurados,
+        orientationSelected: selectedDocument.orientationSelected,
+      });
+    }
+
+    if (companyPersonnelPattern?.acceptable) {
+      return {
+        ...createCompanyPersonnelPatternResult({
+          hasExplicitTables: Boolean(tablesText),
+          orientationSelected: selectedDocument.orientationSelected,
+          pageCount: document.pages?.length ?? 1,
+          pattern: companyPersonnelPattern,
+        }),
+        internalProfile: classification.profile,
+        providerUsed: this.name,
+        rawTextContent,
+        textLength: rawTextContent.length,
+      };
+    }
+
     let normalized: CsvAnalysisResult;
 
     try {
@@ -295,22 +339,31 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
     } catch (error) {
       throw new OCRTextOnlyError({
         canDownloadRawText: true,
+        companyPersonnelQualityMetrics:
+          companyPersonnelPattern?.metrics,
         documentAiDetectedTables: Boolean(tablesText),
         extractionMode: "ocr_text_only",
         fallbackUsed: false,
         pagesProcessed: document.pages?.length ?? 0,
+        orientationSelected: selectedDocument.orientationSelected,
         profileUsed: getClientProfileCode(classification.profile),
         providerUsed: this.name,
-        qualityScore: personnelPattern?.qualityScore ?? 0.5,
+        qualityScore:
+          personnelPattern?.qualityScore ??
+          companyPersonnelPattern?.qualityScore ??
+          0.5,
         qualityStatus: "failed_quality_gate",
         rawTextContent,
         reason: personnelPattern
           ? `El patron deterministico no alcanzo el 65% de filas validas. ${getSafeNormalizationFailureReason(error)}`
-          : getSafeNormalizationFailureReason(error),
+          : companyPersonnelPattern
+            ? `El patron empresa/personal no alcanzo el umbral propio. ${getSafeNormalizationFailureReason(error)}`
+            : getSafeNormalizationFailureReason(error),
         textLength: rawTextContent.length,
         warnings: [
           ...(tablesText ? [] : ["Google Document AI no detecto tablas explicitas."]),
           ...(personnelPattern?.warnings ?? []),
+          ...(companyPersonnelPattern?.warnings ?? []),
           "El texto OCR fue recuperado, pero no pudo normalizarse como una tabla confiable.",
         ],
       });
@@ -323,6 +376,7 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
       providerUsed: this.name,
       rawTextContent,
       textLength: rawTextContent.length,
+      orientationSelected: selectedDocument.orientationSelected,
       warnings: [
         ...(normalized.warnings ?? []),
         ...(tablesText ? [] : ["Google Document AI no detecto tablas explicitas; se normalizo desde texto OCR."]),
@@ -331,10 +385,160 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
   }
 }
 
+async function selectDocumentAiOrientation(input: {
+  client: DocumentAiClient;
+  fileBuffer: Buffer;
+  mimeType: string;
+  name: string;
+}): Promise<{
+  document: DocumentAiDocument;
+  orientationSelected: 0 | 90 | 180 | 270;
+}> {
+  const initialDocument = await processDocumentAi(
+    input.client,
+    input.name,
+    input.fileBuffer,
+    input.mimeType,
+  );
+  const initialText = sanitizeRawOcrText(initialDocument.text ?? "");
+
+  if (
+    (input.mimeType !== "image/jpeg" &&
+      input.mimeType !== "image/png") ||
+    !hasPotentialCompanyPersonnelSignals(initialText)
+  ) {
+    return {
+      document: initialDocument,
+      orientationSelected: 0,
+    };
+  }
+
+  let best = {
+    document: initialDocument,
+    orientation: 0 as 0 | 90 | 180 | 270,
+    score: scoreCompanyPersonnelText(initialText),
+  };
+
+  for (const rotation of [90, 180, 270] as const) {
+    try {
+      const rotatedBuffer = await rotateImageForDocumentAi(
+        input.fileBuffer,
+        rotation,
+      );
+      const document = await processDocumentAi(
+        input.client,
+        input.name,
+        rotatedBuffer,
+        "image/jpeg",
+      );
+      const text = sanitizeRawOcrText(document.text ?? "");
+      const score = scoreCompanyPersonnelText(text);
+      const patternResult = extractCompanyPersonnelByPattern(text);
+
+      console.info("[OCR] company personnel orientation assessment", {
+        orientation: rotation,
+        score: Math.round(score * 100) / 100,
+        companiesDetected: patternResult.metrics.empresasDetectadas,
+        cuitsDetected: patternResult.metrics.cuitsDetectados,
+        dnisDetected: patternResult.metrics.dnisDetectados,
+        textLength: text.length,
+      });
+
+      if (score > best.score) {
+        best = {
+          document,
+          orientation: rotation,
+          score,
+        };
+      }
+    } catch (error) {
+      console.warn("[OCR] company personnel orientation failed", {
+        orientation: rotation,
+        errorName: error instanceof Error ? error.name : typeof error,
+      });
+    }
+  }
+
+  console.info("[OCR] company personnel orientation selected", {
+    orientationSelected: best.orientation,
+    score: Math.round(best.score * 100) / 100,
+  });
+
+  return {
+    document: best.document,
+    orientationSelected: best.orientation,
+  };
+}
+
+async function processDocumentAi(
+  client: DocumentAiClient,
+  name: string,
+  fileBuffer: Buffer,
+  mimeType: string,
+) {
+  const [response] = await client.processDocument({
+    name,
+    rawDocument: {
+      content: fileBuffer.toString("base64"),
+      mimeType,
+    },
+  });
+
+  if (!response.document) {
+    throw new CsvAnalysisError(
+      "Google Document AI no devolvio un documento.",
+      "GOOGLE_DOCUMENT_AI_EMPTY_DOCUMENT",
+    );
+  }
+
+  return response.document;
+}
+
+async function rotateImageForDocumentAi(
+  fileBuffer: Buffer,
+  rotation: 90 | 180 | 270,
+) {
+  const sharpModule = await import("sharp");
+  return sharpModule.default(fileBuffer)
+    .rotate(rotation)
+    .jpeg({ mozjpeg: true, quality: 90 })
+    .toBuffer();
+}
+
 function normalizeProviderResultForProfile(
   result: CsvAnalysisResult,
   profile?: ClientProfile,
 ): CsvAnalysisResult {
+  if (isCompanyPersonnelProfile(profile)) {
+    const columns = [...COMPANY_PERSONNEL_COLUMNS];
+    const parsed = parseCsvPreview(result.csvContent);
+    const parsedRows = parsed.rows.map((values) =>
+      Object.fromEntries(
+        parsed.columns.map((column, index) => [column, values[index] ?? ""]),
+      ),
+    );
+    const normalizedRows = parsedRows.map((row) =>
+      Object.fromEntries(
+        columns.map((column) => [column, findRowValue(row, column)]),
+      ),
+    );
+    const rowsWithDni = normalizedRows.filter((row) =>
+      isValidDni(row.DNI),
+    );
+    const finalRows = rowsWithDni.length > 0 ? rowsWithDni : normalizedRows;
+
+    return {
+      ...result,
+      companyPersonnelQualityMetrics:
+        calculateCompanyPersonnelMetrics(finalRows),
+      csvContent: recordsToCsv(columns, finalRows),
+      extractedRows: finalRows.length,
+      jsonColumns: columns,
+      jsonRows: finalRows,
+      rowsExtracted: finalRows.length,
+    };
+  }
+
   if (profile?.defaultExtractionProfile !== "personnel-roster") {
     return result;
   }
@@ -424,6 +628,48 @@ function createPersonnelPatternResult(input: {
       ...(input.hasExplicitTables
         ? []
         : ["La nomina se reconstruyo por patron de CUIL sin tabla explicita."]),
+    ],
+  };
+}
+
+function createCompanyPersonnelPatternResult(input: {
+  hasExplicitTables: boolean;
+  orientationSelected: 0 | 90 | 180 | 270;
+  pageCount: number;
+  pattern: CompanyPersonnelPatternResult;
+}): CsvAnalysisResult {
+  const columns = [...COMPANY_PERSONNEL_COLUMNS];
+  const rows = input.pattern.rows.map((row) => ({ ...row }));
+
+  console.info("[OCR] company personnel pattern structured", {
+    extractionMode: "pattern_structured",
+    orientationSelected: input.orientationSelected,
+    pagesProcessed: input.pageCount,
+    qualityScore: input.pattern.qualityScore,
+    rowsExtracted: rows.length,
+  });
+
+  return {
+    companyPersonnelQualityMetrics: input.pattern.metrics,
+    csvContent: recordsToCsv(columns, rows),
+    extractedRows: rows.length,
+    extractionMode: "pattern_structured",
+    fileName: createCsvFileName("PERSONAL_EMPRESA"),
+    jsonColumns: columns,
+    jsonRows: rows,
+    modelUsed: "google-document-ai · company personnel pattern",
+    orientationSelected: input.orientationSelected,
+    pagesProcessed: input.pageCount,
+    providerConfidence: input.pattern.qualityScore,
+    resultQuality: "ai",
+    rowsExtracted: rows.length,
+    warnings: [
+      ...input.pattern.warnings,
+      ...(input.hasExplicitTables
+        ? []
+        : [
+            "El listado se reconstruyo por patrones de Empresa, CUIT y DNI sin tabla explicita.",
+          ]),
     ],
   };
 }

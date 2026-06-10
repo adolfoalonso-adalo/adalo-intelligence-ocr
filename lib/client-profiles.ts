@@ -4,6 +4,7 @@ import type { DocumentType } from "@/lib/document-type";
 export type ExtractionProfile =
   | "commercial-operations"
   | "general"
+  | "personnel-company-location"
   | "personnel-roster"
   | "table-list"
   | "technical-admin"
@@ -197,6 +198,58 @@ Reglas:
 - En cada row incluye tambien pageNumber, rowNumber, confidence y warnings para el JSON; esas columnas auxiliares no deben reemplazar las columnas principales.`,
   },
   {
+    id: "internal-personal-empresa-localidad",
+    label: "Listado de personal por empresa/localidad",
+    documentType: "personnel_company_location",
+    extractionMode: "text_chunks",
+    defaultExtractionProfile: "personnel-company-location",
+    preferredDocumentTypes: [
+      "listados de personal",
+      "empresas",
+      "cuit",
+      "dni",
+      "provincia",
+      "localidad",
+    ],
+    expectedColumns: [
+      "Empresa",
+      "CUIT",
+      "NombreApellido",
+      "DNI",
+      "Provincia",
+      "Localidad",
+    ],
+    validationRules: {
+      allowEmptyCells: true,
+      rejectGenericLineCsv: true,
+      requireTableStructure: false,
+      requiredColumns: [
+        "Empresa",
+        "CUIT",
+        "NombreApellido",
+        "DNI",
+        "Provincia",
+        "Localidad",
+      ],
+    },
+    csvTemplate: "personnel-company-location",
+    userFacingExtractionType: "Listado de personal por empresa/localidad",
+    promptHint: `Actua como un sistema OCR especializado en listados de personal agrupados por empresa y localidad.
+
+Usa exactamente estas columnas y este orden:
+Empresa, CUIT, NombreApellido, DNI, Provincia, Localidad.
+
+Reglas:
+- Usa CUIT con formato XX-XXXXXXXX-X como ancla de empresa.
+- Usa DNI de 7 u 8 digitos como ancla de persona.
+- No confundas CUIT con DNI.
+- Propaga Empresa y CUIT a todas las personas siguientes hasta detectar una nueva empresa.
+- No dependas de una tabla explicita de Document AI.
+- No inventes nombres, DNI, CUIT, provincias ni localidades.
+- Si un dato no es legible, dejalo vacio.
+- No devuelvas Pagina, Linea, Texto.`,
+  },
+  {
     id: "internal-nomina-personal",
     label: "Nómina de personal / lugar de residencia",
     documentType: "personnel_roster",
@@ -307,6 +360,10 @@ export function resolveDocumentTypeForProfile(
     return "table";
   }
 
+  if (profile.defaultExtractionProfile === "personnel-company-location") {
+    return "table";
+  }
+
   if (profile.defaultExtractionProfile === "technical-admin") {
     return "report";
   }
@@ -328,6 +385,10 @@ export function getClientProfileCode(profile?: ClientProfile | null) {
 
 export function isPersonnelRosterProfile(profile?: ClientProfile | null) {
   return profile?.defaultExtractionProfile === "personnel-roster";
+}
+
+export function isCompanyPersonnelProfile(profile?: ClientProfile | null) {
+  return profile?.defaultExtractionProfile === "personnel-company-location";
 }
 
 function normalizeLegacyProfileId(profileId?: string | null) {

@@ -17,6 +17,41 @@ export function classifyInternalOCRProfile(input: {
 }): InternalProfileClassification {
   const searchable = normalizeSearchText(`${input.fileName ?? ""}\n${input.text ?? ""}`);
   const configuredProfile = input.configuredProfile;
+  const companyMatches =
+    searchable.match(
+      /\b(?:s r l|s a|sociedad anonima|sociedad de responsabilidad limitada)\b/g,
+    )?.length ?? 0;
+  const cuitMatches =
+    `${input.fileName ?? ""}\n${input.text ?? ""}`.match(
+      /\b\d{2}-\d{8}-\d\b/g,
+    )?.length ?? 0;
+  const textWithoutCuits = `${input.fileName ?? ""}\n${input.text ?? ""}`.replace(
+    /\b\d{2}-\d{8}-\d\b/g,
+    " ",
+  );
+  const dniMatches = textWithoutCuits.match(/\b\d{7,8}\b/g)?.length ?? 0;
+  const locationSignals = countSignals(searchable, [
+    "provincia",
+    "localidad",
+    "salta",
+    "jujuy",
+    "catamarca",
+    "mendoza",
+    "chicoana",
+  ]);
+
+  if (
+    companyMatches >= 1 &&
+    cuitMatches >= 1 &&
+    dniMatches >= 2 &&
+    locationSignals >= 1
+  ) {
+    return classification(
+      "internal-personal-empresa-localidad",
+      "Coinciden empresas, CUIT, DNI y ubicaciones de un listado de personal.",
+      dniMatches >= 10 ? "high" : "medium",
+    );
+  }
 
   const personnelSignals = countSignals(searchable, [
     "nomina del personal",

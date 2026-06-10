@@ -12,6 +12,7 @@ export type ExtractionMetadataInput = {
   originalFileName: string;
   outputFileName: string;
   outputJsonFileName?: string;
+  orientationSelected?: number;
   pagesProcessed?: number;
   processedAt?: Date;
   primaryProvider?: string;
@@ -39,6 +40,7 @@ export type ExtractionMetadata = {
   originalFileName: string;
   outputFileName: string;
   outputJsonFileName?: string;
+  orientationSelected?: number;
   pagesProcessed?: number;
   processedAt: string;
   primaryProvider?: string;
@@ -66,6 +68,7 @@ export function createExtractionMetadata({
   originalFileName,
   outputFileName,
   outputJsonFileName,
+  orientationSelected,
   pagesProcessed,
   processedAt = new Date(),
   primaryProvider,
@@ -92,6 +95,7 @@ export function createExtractionMetadata({
     originalFileName,
     outputFileName,
     outputJsonFileName,
+    orientationSelected,
     pagesProcessed,
     processedAt: processedAt.toISOString(),
     primaryProvider,

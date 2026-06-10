@@ -43,6 +43,7 @@ export type CsvAnalysisResult = {
   resultQuality?: "ai" | "partial" | "local-fallback";
   extractionMode?: string;
   pagesProcessed?: number;
+  orientationSelected?: 0 | 90 | 180 | 270;
   providerConfidence?: number;
   rowsExtracted?: number;
   visualStructuringProvider?: string;
@@ -55,6 +56,19 @@ export type CsvAnalysisResult = {
     filasConProvincia: number;
     porcentajeCompletitud: number;
     totalRegistros: number;
+  };
+  companyPersonnelQualityMetrics?: {
+    cuitsDetectados: number;
+    dnisDetectados: number;
+    empresasDetectadas: number;
+    filasConCUIT: number;
+    filasConDNI: number;
+    filasConEmpresa: number;
+    filasConLocalidad: number;
+    filasConNombre: number;
+    filasConProvincia: number;
+    porcentajeCompletitud: number;
+    registrosEstructurados: number;
   };
 };
 

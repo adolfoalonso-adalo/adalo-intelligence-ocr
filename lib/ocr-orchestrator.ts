@@ -283,10 +283,13 @@ export async function runOcrExtraction(input: {
 
     throw new OCRTextOnlyError({
       canDownloadRawText: true,
+      companyPersonnelQualityMetrics:
+        primaryResult.companyPersonnelQualityMetrics,
       documentAiDetectedTables: primaryResult.documentAiDetectedTables,
       extractionMode: "ocr_text_only",
       fallbackUsed: false,
       multimodalFallbackAttempted: visualAttempt.attempted,
+      orientationSelected: primaryResult.orientationSelected,
       pagesProcessed: primaryResult.pagesProcessed ?? preprocessing.pagesProcessed,
       profileUsed: getClientProfileCode(resultProfile),
       providerUsed: primaryProvider.name,
@@ -523,10 +526,13 @@ async function runFallbackProviderOrThrow({
   if (fallbackResult.rawTextContent) {
     throw new OCRTextOnlyError({
       canDownloadRawText: true,
+      companyPersonnelQualityMetrics:
+        fallbackResult.companyPersonnelQualityMetrics,
       documentAiDetectedTables: fallbackResult.documentAiDetectedTables,
       extractionMode: "ocr_text_only",
       fallbackUsed: fallbackProvider.name !== primaryProviderName,
       multimodalFallbackAttempted,
+      orientationSelected: fallbackResult.orientationSelected,
       pagesProcessed: fallbackResult.pagesProcessed ?? pagesProcessed,
       profileUsed: getClientProfileCode(fallbackProfile),
       providerUsed: fallbackProvider.name,
