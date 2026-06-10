@@ -7,6 +7,10 @@ import {
 import { parseCsvPreview } from "@/lib/csv-preview";
 import type { DocumentPreprocessingResult } from "@/lib/document-preprocessing";
 import type { CsvAnalysisResult } from "@/lib/google-ai";
+import {
+  assessPersonnelRosterRows,
+  isValidCuil,
+} from "@/lib/personnel-roster-pattern";
 import { assessExtractionQuality } from "@/lib/structured-output";
 
 export type OCRQualityStatus =
@@ -58,8 +62,6 @@ export function assessOCRQuality(
   if (isPersonnelRosterProfile(profile)) {
     return assessPersonnelRosterResult({
       columns,
-      confidence,
-      minConfidence,
       rows,
       warnings,
     });
@@ -123,14 +125,10 @@ export function assessOCRQuality(
 
 function assessPersonnelRosterResult({
   columns,
-  confidence,
-  minConfidence,
   rows,
   warnings,
 }: {
   columns: string[];
-  confidence: number;
-  minConfidence: number;
   rows: Record<string, string>[];
   warnings: string[];
 }): OCRQualityAssessment {
@@ -149,7 +147,8 @@ function assessPersonnelRosterResult({
   const hasGenericLineCsv = ["pagina", "linea", "texto"].every((column) =>
     normalizedColumns.includes(column),
   );
-  const validRows = rows.filter((row) => looksLikeCuil(String(row.CUIL ?? "")));
+  const rowAssessment = assessPersonnelRosterRows(rows);
+  const confidence = rowAssessment.qualityScore;
 
   if (hasGenericLineCsv) {
     return createAssessment({
@@ -169,7 +168,7 @@ function assessPersonnelRosterResult({
     });
   }
 
-  if (validRows.length === 0) {
+  if (!rows.some((row) => isValidCuil(String(row.CUIL ?? "")))) {
     return createAssessment({
       confidence: 0,
       qualityStatus: "fallback_required",
@@ -178,28 +177,34 @@ function assessPersonnelRosterResult({
     });
   }
 
-  if (confidence < minConfidence) {
+  if (!rowAssessment.acceptable) {
     return createAssessment({
       confidence,
       qualityStatus: "fallback_required",
-      reason: `Confidence ${confidence.toFixed(2)} below minimum ${minConfidence.toFixed(2)}`,
+      reason: `Personnel roster row quality ${confidence.toFixed(2)} below minimum 0.65`,
       warnings,
     });
   }
 
+  const personnelWarnings = [
+    ...warnings,
+    ...(rowAssessment.recognizedProvinceRows < rows.length
+      ? [
+          `${rows.length - rowAssessment.recognizedProvinceRows} fila(s) requieren revision de provincia.`,
+        ]
+      : []),
+  ];
+
   return {
     acceptable: true,
     confidence,
-    qualityStatus: warnings.length > 0 ? "completed_with_warnings" : "completed",
+    qualityStatus:
+      personnelWarnings.length > 0 ? "completed_with_warnings" : "completed",
     reason: "Personnel roster quality gate passed",
     requiresManualReview: false,
     shouldFallback: false,
-    warnings,
+    warnings: personnelWarnings,
   };
-}
-
-function looksLikeCuil(value: string) {
-  return /^\d{2}[- ]?\d{7,8}[- ]?\d$/.test(value.trim());
 }
 
 function assessVisionTableProfileResult({
@@ -348,10 +353,9 @@ function estimateConfidence(
 
   if (
     isPersonnelRosterProfile(profile) &&
-    columns.length >= 6 &&
-    rows.some((row) => looksLikeCuil(String(row.CUIL ?? "")))
+    columns.length >= 6
   ) {
-    return 0.9;
+    return assessPersonnelRosterRows(rows).qualityScore;
   }
 
   const structuredQuality = assessExtractionQuality(columns, rows, {

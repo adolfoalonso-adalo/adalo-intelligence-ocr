@@ -1,8 +1,10 @@
 import {
   getClientProfileCode,
+  isPersonnelRosterProfile,
   resolveDocumentTypeForProfile,
   type ClientProfile,
 } from "@/lib/client-profiles";
+import { createCsvFileName } from "@/lib/csv";
 import type { DocumentPreprocessingResult } from "@/lib/document-preprocessing";
 import type { DocumentType } from "@/lib/document-type";
 import { parseCsvPreview } from "@/lib/csv-preview";
@@ -21,6 +23,12 @@ import {
   sanitizeRawOcrText,
 } from "@/lib/ocr-diagnostics";
 import { classifyInternalOCRProfile } from "@/lib/internal-profile-classifier";
+import {
+  extractPersonnelRosterByPattern,
+  normalizePersonnelRosterValue,
+  PERSONNEL_ROSTER_COLUMNS,
+  type PersonnelRosterPatternResult,
+} from "@/lib/personnel-roster-pattern";
 import { recordsToCsv } from "@/lib/structured-output";
 
 export type OCRProviderName = "google-ai" | "advanced-document" | "google-document-ai";
@@ -240,6 +248,36 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
       reason: classification.reason,
       providerUsed: this.name,
     });
+    const personnelPattern = isPersonnelRosterProfile(classification.profile)
+      ? extractPersonnelRosterByPattern(rawTextContent)
+      : null;
+
+    if (personnelPattern) {
+      console.info("[OCR] personnel roster pattern assessment", {
+        detectedCuils: personnelPattern.detectedCuils,
+        profileUsed: getClientProfileCode(classification.profile),
+        providerUsed: this.name,
+        qualityScore: personnelPattern.qualityScore,
+        recognizedProvinceRows: personnelPattern.recognizedProvinceRows,
+        validRows: personnelPattern.validRows,
+      });
+    }
+
+    if (personnelPattern?.acceptable) {
+      return {
+        ...createPersonnelPatternResult({
+          fileName: input.fileName,
+          hasExplicitTables: Boolean(tablesText),
+          pageCount: document.pages?.length ?? 0,
+          pattern: personnelPattern,
+        }),
+        internalProfile: classification.profile,
+        providerUsed: this.name,
+        rawTextContent,
+        textLength: rawTextContent.length,
+      };
+    }
+
     let normalized: CsvAnalysisResult;
 
     try {
@@ -260,13 +298,16 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
         pagesProcessed: document.pages?.length ?? 0,
         profileUsed: getClientProfileCode(classification.profile),
         providerUsed: this.name,
-        qualityScore: 0.5,
+        qualityScore: personnelPattern?.qualityScore ?? 0.5,
         qualityStatus: "failed_quality_gate",
         rawTextContent,
-        reason: getSafeNormalizationFailureReason(error),
+        reason: personnelPattern
+          ? `El patron deterministico no alcanzo el 65% de filas validas. ${getSafeNormalizationFailureReason(error)}`
+          : getSafeNormalizationFailureReason(error),
         textLength: rawTextContent.length,
         warnings: [
           ...(tablesText ? [] : ["Google Document AI no detecto tablas explicitas."]),
+          ...(personnelPattern?.warnings ?? []),
           "El texto OCR fue recuperado, pero no pudo normalizarse como una tabla confiable.",
         ],
       });
@@ -295,12 +336,7 @@ function normalizeProviderResultForProfile(
   }
 
   const columns = [
-    "Numero",
-    "NombreApellido",
-    "CUIL",
-    "LugarTrabajo",
-    "Localidad",
-    "Provincia",
+    ...PERSONNEL_ROSTER_COLUMNS,
   ];
   const parsed = parseCsvPreview(result.csvContent);
   const parsedRows = parsed.rows.map((values) =>
@@ -311,14 +347,15 @@ function normalizeProviderResultForProfile(
       const normalized: Record<string, string> = {};
 
       for (const column of columns) {
-        normalized[column] = normalizePersonnelValue(column, findRowValue(row, column));
+        normalized[column] = normalizePersonnelRosterValue(
+          column,
+          findRowValue(row, column),
+        );
       }
 
       return normalized;
     });
-  const rowsWithCuil = normalizedRows.filter((row) =>
-    /^\d{2}[- ]?\d{7,8}[- ]?\d$/.test(row.CUIL),
-  );
+  const rowsWithCuil = normalizedRows.filter((row) => /^\d{10,11}$/.test(row.CUIL));
   const finalRows = rowsWithCuil.length > 0 ? rowsWithCuil : normalizedRows;
 
   return {
@@ -340,26 +377,49 @@ function findRowValue(row: Record<string, string>, expectedColumn: string) {
   return sourceColumn ? row[sourceColumn] : "";
 }
 
-function normalizePersonnelValue(column: string, value: string) {
-  let normalized = String(value ?? "").replace(/\s+/g, " ").trim();
-
-  if (column === "Localidad") {
-    normalized = normalized.replace(/^(?:OD|D|0|00|10)\s+/i, "");
-  }
-
-  return normalized
-    .replace(/\bSatta\b/gi, "Salta")
-    .replace(/\bJWUY\b/gi, "Jujuy")
-    .replace(/\bCampo Quljano\b/gi, "Campo Quijano")
-    .replace(/\bGeneral Mosconl\b/gi, "General Mosconi");
-}
-
 function normalizeColumnName(value: string) {
   return value
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-zA-Z0-9]+/g, "")
     .toLowerCase();
+}
+
+function createPersonnelPatternResult(input: {
+  fileName: string;
+  hasExplicitTables: boolean;
+  pageCount: number;
+  pattern: PersonnelRosterPatternResult;
+}): CsvAnalysisResult {
+  const columns = [...PERSONNEL_ROSTER_COLUMNS];
+  const rows = input.pattern.rows.map((row) => ({ ...row }));
+
+  console.info("[OCR] personnel roster pattern structured", {
+    extractionMode: "pattern_structured",
+    fileName: input.fileName,
+    pagesProcessed: input.pageCount,
+    qualityScore: input.pattern.qualityScore,
+    rowsExtracted: rows.length,
+  });
+
+  return {
+    csvContent: recordsToCsv(columns, rows),
+    extractedRows: rows.length,
+    extractionMode: "pattern_structured",
+    fileName: createCsvFileName("LISTADO"),
+    jsonColumns: columns,
+    jsonRows: rows,
+    modelUsed: "google-document-ai · pattern_structured",
+    pagesProcessed: input.pageCount,
+    resultQuality: "ai",
+    rowsExtracted: rows.length,
+    warnings: [
+      ...input.pattern.warnings,
+      ...(input.hasExplicitTables
+        ? []
+        : ["La nomina se reconstruyo por patron de CUIL sin tabla explicita."]),
+    ],
+  };
 }
 
 function getSafeNormalizationFailureReason(error: unknown) {

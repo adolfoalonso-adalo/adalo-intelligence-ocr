@@ -198,7 +198,7 @@ Reglas:
   },
   {
     id: "internal-nomina-personal",
-    label: "Nómina de personal",
+    label: "Nómina de personal / lugar de residencia",
     documentType: "personnel_roster",
     extractionMode: "text_chunks",
     defaultExtractionProfile: "personnel-roster",
@@ -214,7 +214,7 @@ Reglas:
     validationRules: {
       allowEmptyCells: true,
       rejectGenericLineCsv: true,
-      requireTableStructure: true,
+      requireTableStructure: false,
       requiredColumns: [
         "Numero",
         "NombreApellido",
@@ -225,7 +225,7 @@ Reglas:
       ],
     },
     csvTemplate: "personnel-roster",
-    userFacingExtractionType: "Nómina de personal",
+    userFacingExtractionType: "Nómina de personal / lugar de residencia",
     promptHint: `Actua como un sistema OCR especializado en nominas de personal escaneadas o digitales.
 
 Usa exactamente estas columnas y este orden:
@@ -235,7 +235,8 @@ Reglas:
 - Usa el CUIL como ancla para reconstruir cada fila.
 - Si detectas mas de 100 CUIL, estructura todas las filas por patron aunque el OCR no haya detectado una tabla explicita.
 - Limpia ruido OCR aislado antes de Localidad, como OD, D, 0, 00 o 10.
-- Normaliza errores evidentes: Satta a Salta, JWUY a Jujuy, Campo Quljano a Campo Quijano y General Mosconl a General Mosconi.
+- Normaliza errores evidentes: Satta a Salta, JWUY a Jujuy, Campo Quljano a Campo Quijano, General Mosconl a General Mosconi y Comodoro Rivadavla a Comodoro Rivadavia.
+- No dependas de una tabla explicita: si el texto contiene muchos CUIL, reconstruye las filas por patron.
 - No inventes personas ni CUIL.
 - Conserva una fila por persona.
 - Si una celda es ilegible, dejala vacia.

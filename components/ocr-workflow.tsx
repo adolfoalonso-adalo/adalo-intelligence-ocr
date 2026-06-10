@@ -350,7 +350,9 @@ export function OcrWorkflow({
             Salida: CSV estructurado + JSON estructurado
           </p>
           {allowProfileTesting && accessMode === "master" && result.profileCode ? (
-            <p className="mt-1 text-[11px] opacity-70">Debug: {result.profileCode}</p>
+            <p className="mt-1 text-[11px] opacity-70">
+              profileUsed: {result.profileCode}
+            </p>
           ) : null}
         </div>
       ) : null}
