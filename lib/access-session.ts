@@ -31,8 +31,6 @@ export function verifyAccessSessionCookie(cookieValue?: string): AccessSessionPa
 
   try {
     const parsed = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as Partial<AccessSessionPayload>;
-    if (!parsed.clientProfileId || typeof parsed.clientProfileId !== "string") return null;
-
     return {
       accessCodeId: typeof parsed.accessCodeId === "string" ? parsed.accessCodeId : undefined,
       accessMode:
@@ -41,7 +39,10 @@ export function verifyAccessSessionCookie(cookieValue?: string): AccessSessionPa
           : "legacy",
       allowProfileTesting: parsed.allowProfileTesting === true,
       clientId: typeof parsed.clientId === "string" ? parsed.clientId : undefined,
-      clientProfileId: parsed.clientProfileId,
+      clientProfileId:
+        typeof parsed.clientProfileId === "string"
+          ? parsed.clientProfileId
+          : "internal-general",
       isInternalTest: parsed.isInternalTest === true,
       planId: typeof parsed.planId === "string" ? parsed.planId : undefined,
     };

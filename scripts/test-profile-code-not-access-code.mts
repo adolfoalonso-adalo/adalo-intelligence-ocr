@@ -7,11 +7,11 @@ process.env.ACCESS_CODE_HASHES = [
   hashAccessCode("ADALO-2026-MOVIMIENTO"),
 ].join(",");
 
-assert.equal(verifyAccessCode("ADALO-2026-MATEO"), false);
-assert.equal(verifyAccessCode("ADALO-2026-MOVIMIENTO"), false);
-assert.equal(resolveClientProfileForAccessCode("ADALO-2026-MATEO").id, "general");
-assert.equal(resolveClientProfileForAccessCode("ADALO-2026-MOVIMIENTO").id, "general");
-assert.equal(getClientProfileById("mateo").id, "mateo");
-assert.equal(getClientProfileById("movimiento").id, "movimiento");
+assert.equal(verifyAccessCode("ADALO-2026-MATEO"), true);
+assert.equal(verifyAccessCode("ADALO-2026-MOVIMIENTO"), true);
+assert.equal(resolveClientProfileForAccessCode("ADALO-2026-MATEO").id, "internal-general");
+assert.equal(resolveClientProfileForAccessCode("ADALO-2026-MOVIMIENTO").id, "internal-general");
+assert.equal(getClientProfileById("mateo").id, "internal-dtve-senasa-arca");
+assert.equal(getClientProfileById("movimiento").id, "internal-movimiento-camiones");
 
-console.log("profile-code-not-access-code tests passed");
+console.log("access-code/internal-profile separation tests passed");

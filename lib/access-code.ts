@@ -7,8 +7,6 @@ export function hashAccessCode(code: string): string {
 }
 
 export function verifyAccessCode(code: string): boolean {
-  if (isReservedProfileAccessCode(code)) return false;
-
   const hashes = getConfiguredHashes();
   const candidate = hashAccessCode(code);
 
@@ -16,8 +14,6 @@ export function verifyAccessCode(code: string): boolean {
 }
 
 export function verifyMasterAccessCode(code: string): boolean {
-  if (isReservedProfileAccessCode(code)) return false;
-
   const masterHash = normalizeConfiguredHash(process.env.MASTER_ACCESS_CODE_HASH);
   if (!masterHash) return false;
 
@@ -81,9 +77,8 @@ function normalizeAccessCode(code: string) {
 }
 
 export function isReservedProfileAccessCode(code: string) {
-  const normalized = normalizeAccessCode(code).toUpperCase();
-
-  return normalized === "ADALO-2026-MATEO" || normalized === "ADALO-2026-MOVIMIENTO";
+  void code;
+  return false;
 }
 
 function normalizeConfiguredHash(value?: string) {

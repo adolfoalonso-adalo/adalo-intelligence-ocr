@@ -4,7 +4,6 @@ import {
   getAccessCookieMaxAgeSeconds,
   getAccessCookieName,
   getAccessRateLimitConfig,
-  isReservedProfileAccessCode,
   verifyAccessCode,
   verifyMasterAccessCode,
 } from "@/lib/access-code";
@@ -16,8 +15,8 @@ import {
 import { auth } from "@/lib/auth";
 import {
   createClientProfileCookie,
+  getClientProfileById,
   getClientProfileCookieName,
-  resolveClientProfileForAccessCode,
 } from "@/lib/client-profiles";
 import {
   checkRateLimit,
@@ -60,9 +59,7 @@ export async function POST(request: Request) {
 
     const body = (await request.json().catch(() => null)) as { code?: unknown } | null;
     const code = typeof body?.code === "string" ? body.code : "";
-    const isReservedProfileCode = code ? isReservedProfileAccessCode(code) : false;
-
-    const dbValidation = code && !isReservedProfileCode ? await validateAccessCodeFromDatabase(code) : null;
+    const dbValidation = code ? await validateAccessCodeFromDatabase(code) : null;
     const isValidDbCode = dbValidation?.source === "db" && dbValidation.valid;
     const isInvalidKnownDbCode = dbValidation?.source === "db" && !dbValidation.valid;
     const isValidMasterCode =
@@ -92,10 +89,10 @@ export async function POST(request: Request) {
     }
 
     const clientProfile = isValidDbCode
-      ? { id: dbValidation.clientProfileId }
+      ? getClientProfileById(dbValidation.clientProfileId)
       : isValidMasterCode
-        ? { id: "general" }
-        : resolveClientProfileForAccessCode(code);
+        ? getClientProfileById("internal-general")
+        : getClientProfileById("internal-general");
     const response = jsonResponse({ success: true }, 200, rateLimit);
     response.cookies.set(getAccessCookieName(), createAccessCookie(), {
       httpOnly: true,

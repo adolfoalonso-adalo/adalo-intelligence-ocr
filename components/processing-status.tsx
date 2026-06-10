@@ -144,7 +144,7 @@ function getErrorTitle(details?: string) {
   if (
     normalized.includes("extracción básica no es adecuada") ||
     normalized.includes("extraccion basica no es adecuada") ||
-    normalized.includes("adalo-2026-movimiento")
+    normalized.includes("internal-movimiento-camiones")
   ) {
     return "OCR visual tabular requerido";
   }
@@ -186,9 +186,9 @@ function getErrorDescription(details?: string) {
   if (
     normalized.includes("extracción básica no es adecuada") ||
     normalized.includes("extraccion basica no es adecuada") ||
-    normalized.includes("adalo-2026-movimiento")
+    normalized.includes("internal-movimiento-camiones")
   ) {
-    return "La extracción básica no es adecuada para este documento. Reprocesá con OCR visual de tablas usando el perfil ADALO-2026-MOVIMIENTO.";
+    return "La extraccion basica no es adecuada para este documento. Se requiere OCR visual de tablas.";
   }
 
   if (

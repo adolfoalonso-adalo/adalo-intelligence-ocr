@@ -1,5 +1,4 @@
-import { hashAccessCode, isReservedProfileAccessCode } from "@/lib/access-code";
-import { resolveClientProfileForAccessCode } from "@/lib/client-profiles";
+import { hashAccessCode } from "@/lib/access-code";
 import { getPrismaClient } from "@/lib/db";
 
 export type DbAccessCodeValidation =
@@ -22,10 +21,6 @@ export type DbAccessCodeValidation =
     };
 
 export async function validateAccessCodeFromDatabase(code: string): Promise<DbAccessCodeValidation> {
-  if (isReservedProfileAccessCode(code)) {
-    return { source: "not-found", valid: false };
-  }
-
   const prisma = getPrismaClient();
   if (!prisma) return { source: "not-configured", valid: false };
 
@@ -72,9 +67,6 @@ export async function validateAccessCodeFromDatabase(code: string): Promise<DbAc
     accessCodeId: accessCode.id,
     clientId: accessCode.clientId,
     clientProfileId: resolveDbClientProfileId({
-      code,
-      codeAlias: accessCode.codeAlias,
-      displayCodePrefix: accessCode.displayCodePrefix,
       profileId: accessCode.client.profileId,
     }),
     planId: accessCode.planId,
@@ -82,21 +74,9 @@ export async function validateAccessCodeFromDatabase(code: string): Promise<DbAc
 }
 
 function resolveDbClientProfileId({
-  code,
-  codeAlias,
-  displayCodePrefix,
   profileId,
 }: {
-  code: string;
-  codeAlias?: string | null;
-  displayCodePrefix?: string | null;
   profileId?: string | null;
 }) {
-  const aliasProfile =
-    resolveClientProfileForAccessCode(code).id !== "general"
-      ? resolveClientProfileForAccessCode(code)
-      : resolveClientProfileForAccessCode(codeAlias || displayCodePrefix || "");
-
-  if (aliasProfile.id !== "general") return aliasProfile.id;
-  return profileId || "general";
+  return profileId || "internal-general";
 }

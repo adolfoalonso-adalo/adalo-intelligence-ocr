@@ -223,4 +223,36 @@ const structuredDocument = assessExtractionQuality(
 
 assert.equal(structuredDocument.quality, "high");
 
+const personnelProfile = getClientProfileById("internal-nomina-personal");
+const personnelGate = assessOCRQuality(
+  {
+    csvContent: [
+      '"Numero","NombreApellido","CUIL","LugarTrabajo","Localidad","Provincia"',
+      '"1","Ana Perez","27-12345678-5","Planta","Campo Quijano","Salta"',
+    ].join("\n"),
+    extractedRows: 1,
+    fileName: "ADALO_OCR_LISTADO.csv",
+    modelUsed: "test",
+    resultQuality: "ai",
+  },
+  personnelProfile,
+);
+
+assert.equal(personnelGate.acceptable, true);
+assert.equal(personnelGate.reason, "Personnel roster quality gate passed");
+
+const personnelGenericGate = assessOCRQuality(
+  {
+    csvContent: '"Pagina","Linea","Texto"\n"1","1","27-12345678-5 Ana Perez"',
+    extractedRows: 1,
+    fileName: "generic.csv",
+    modelUsed: "test",
+    resultQuality: "local-fallback",
+  },
+  personnelProfile,
+);
+
+assert.equal(personnelGenericGate.acceptable, false);
+assert.equal(personnelGenericGate.shouldFallback, true);
+
 console.log("quality-assessment tests passed");

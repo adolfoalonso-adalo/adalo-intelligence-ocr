@@ -475,6 +475,14 @@ export async function POST(request: Request) {
         throw analysisError;
       }
 
+      if (
+        isProfileExtractionValidationError(analysisError) ||
+        isAiOutputQualityLowError(analysisError) ||
+        isOcrQualityGateError(analysisError)
+      ) {
+        throw analysisError;
+      }
+
       if (mimeType === "application/pdf" && !isVisionTableProfile(clientProfile)) {
         try {
           const fallbackStartedAt = Date.now();
@@ -738,6 +746,7 @@ async function successResponse(
     profileValidationWarnings?: string[];
     resultQuality?: "ai" | "partial" | "local-fallback";
     extractionMode?: string;
+    extractionType?: string;
     primaryProvider?: string;
     fallbackProvider?: string;
     providerUsed?: string;
@@ -745,6 +754,8 @@ async function successResponse(
     qualityStatus?: OCRQualityStatus;
     warnings?: string[];
     pagesProcessed?: number;
+    profileCode?: string;
+    profileName?: string;
     rowsExtracted?: number;
   },
   startedAt: number,
@@ -772,7 +783,7 @@ async function successResponse(
   const jsonColumns = result.jsonColumns ?? columns;
   const jsonRows = result.jsonRows ?? rows;
   const metadata = createExtractionMetadata({
-    clientProfileId: context.clientProfile?.id,
+    clientProfileId: result.profileCode ?? context.clientProfile?.id,
     accessMode: context.accessSession?.accessMode === "master" ? "master" : "client",
     isInternalTest: context.accessSession?.isInternalTest === true,
     durationMs,
@@ -783,8 +794,8 @@ async function successResponse(
     originalFileName: sourceFileName ?? "",
     outputFileName: fileName,
     outputJsonFileName: jsonFileName,
-    profileCode: getClientProfileCode(context.clientProfile),
-    profileName: context.clientProfile?.label,
+    profileCode: result.profileCode ?? getClientProfileCode(context.clientProfile),
+    profileName: result.profileName ?? context.clientProfile?.label,
     records: rows.length,
     primaryProvider: result.primaryProvider,
     fallbackProvider: result.fallbackProvider,
@@ -829,10 +840,10 @@ async function successResponse(
       allowJsonExport,
       extractedRows: result.extractedRows,
       modelUsed: result.modelUsed,
-      profileCode: getClientProfileCode(context.clientProfile),
-      profileName: context.clientProfile?.label,
+      profileCode: result.profileCode ?? getClientProfileCode(context.clientProfile),
+      profileName: result.profileName ?? context.clientProfile?.label,
       extractionMode: result.extractionMode ?? context.clientProfile?.extractionMode,
-      extractionType: context.clientProfile?.userFacingExtractionType,
+      extractionType: result.extractionType ?? context.clientProfile?.userFacingExtractionType,
       resultQuality: result.resultQuality,
       providerUsed: result.providerUsed,
       qualityStatus: result.qualityStatus,
@@ -849,6 +860,7 @@ function resolveCsvFileKind(
   result: {
     csvContent: string;
     modelUsed: string;
+    profileCode?: string;
     resultQuality?: "ai" | "partial" | "local-fallback";
   },
   strategy?: string,
@@ -859,8 +871,19 @@ function resolveCsvFileKind(
 ): CsvFileKind {
   const modelUsed = result.modelUsed.toLowerCase();
 
-  if (context.clientProfile?.id === "movimiento" || context.clientProfile?.extractionMode === "vision_table") {
+  if (
+    result.profileCode === "internal-movimiento-camiones" ||
+    context.clientProfile?.id === "internal-movimiento-camiones" ||
+    context.clientProfile?.extractionMode === "vision_table"
+  ) {
     return "MOVIMIENTO";
+  }
+
+  if (
+    result.profileCode === "internal-nomina-personal" ||
+    result.profileCode === "internal-tabla-administrativa"
+  ) {
+    return "LISTADO";
   }
 
   if (result.resultQuality === "local-fallback" || modelUsed.includes("local pdf text fallback")) {

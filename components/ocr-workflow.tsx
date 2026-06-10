@@ -222,7 +222,10 @@ export function OcrWorkflow({
         setTextOnlyDiagnostic({
           providerUsed: data.providerUsed,
           fallbackUsed: data.fallbackUsed,
-          profileUsed: data.profileUsed,
+          profileUsed:
+            allowProfileTesting && accessMode === "master"
+              ? data.profileUsed
+              : undefined,
           pagesProcessed: data.pagesProcessed,
           textLength: data.textLength,
           qualityScore: data.qualityScore,
@@ -336,14 +339,19 @@ export function OcrWorkflow({
         diagnostic={status === "error" ? textOnlyDiagnostic : null}
       />
 
-      {result && status === "done" && result.profileCode && result.profileCode !== "general" ? (
+      {result && status === "done" && result.profileName ? (
         <div className="rounded-2xl border border-brand-border bg-brand-card px-4 py-3 text-center text-xs leading-5 text-brand-slate">
-          <p className="font-semibold text-brand-deep">Perfil utilizado: {result.profileCode}</p>
+          <p className="font-semibold text-brand-deep">
+            Tipo detectado: {result.extractionType || result.profileName}
+          </p>
           <p>
-            Tipo de extraccion: {result.extractionType || formatExtractionMode(result.extractionMode)}
+            Extraccion: {formatExtractionMode(result.extractionMode)}
             {" · "}
             Salida: CSV estructurado + JSON estructurado
           </p>
+          {allowProfileTesting && accessMode === "master" && result.profileCode ? (
+            <p className="mt-1 text-[11px] opacity-70">Debug: {result.profileCode}</p>
+          ) : null}
         </div>
       ) : null}
 

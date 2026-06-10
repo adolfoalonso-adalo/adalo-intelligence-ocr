@@ -1,6 +1,7 @@
 import {
   getClientProfileCode,
   isVisionTableProfile,
+  resolveDocumentTypeForProfile,
   type ClientProfile,
 } from "@/lib/client-profiles";
 import { analyzeDocumentForOcr } from "@/lib/document-preprocessing";
@@ -10,6 +11,7 @@ import {
   OCRTextOnlyError,
   withOCRTextOnlyContext,
 } from "@/lib/ocr-diagnostics";
+import { classifyInternalOCRProfile } from "@/lib/internal-profile-classifier";
 import {
   assessOCRQuality,
   logOCRQualityAssessment,
@@ -25,6 +27,7 @@ import {
 
 export type OrchestratedOCRResult = CsvAnalysisResult & {
   confidence?: number;
+  extractionType?: string;
   fallbackProvider?: OCRProviderName;
   pagesProcessed?: number;
   primaryProvider?: OCRProviderName;
@@ -59,6 +62,28 @@ export async function runOcrExtraction(input: {
     mimeType: input.mimeType,
     profile: input.clientProfile,
   });
+  const initialClassification = classifyInternalOCRProfile({
+    configuredProfile: input.clientProfile,
+    fileName: input.fileName,
+    hasTableSignals: preprocessing.hasTableSignals,
+    text: preprocessing.extractedText,
+  });
+  const internalProfile = initialClassification.profile;
+  const effectiveInput = {
+    ...input,
+    clientProfile: internalProfile,
+    documentType: resolveDocumentTypeForProfile(
+      initialClassification.confidence === "low" ? input.documentType : "auto",
+      internalProfile,
+    ),
+  };
+
+  console.info("[OCR] internal profile classified", {
+    confidence: initialClassification.confidence,
+    profileUsed: getClientProfileCode(internalProfile),
+    reason: initialClassification.reason,
+    providerUsed: "preprocessing",
+  });
 
   console.info("[OCR] provider strategy", {
     fileName: input.fileName,
@@ -66,8 +91,8 @@ export async function runOcrExtraction(input: {
     primaryProvider: primaryProvider.name,
     fallbackProvider: fallbackProvider.name,
     fallbackEnabled,
-    profileCode: getClientProfileCode(input.clientProfile),
-    extractionMode: input.clientProfile?.extractionMode,
+    profileCode: getClientProfileCode(internalProfile),
+    extractionMode: internalProfile.extractionMode,
     documentKind: preprocessing.documentKind,
     pagesProcessed: preprocessing.pagesProcessed,
     hasTableSignals: preprocessing.hasTableSignals,
@@ -85,14 +110,14 @@ export async function runOcrExtraction(input: {
     console.info("[OCR] scanned PDF routed to advanced provider", {
       fileName: input.fileName,
       provider: fallbackProvider.name,
-      profileCode: getClientProfileCode(input.clientProfile),
+      profileCode: getClientProfileCode(internalProfile),
       reason: "PDF has no reliable embedded text",
     });
 
     try {
       return await runFallbackProviderOrThrow({
         fallbackProvider,
-        input,
+        input: effectiveInput,
         pagesProcessed: preprocessing.pagesProcessed,
         preprocessing,
         primaryError: new CsvAnalysisError(
@@ -105,7 +130,6 @@ export async function runOcrExtraction(input: {
       if (advancedError instanceof OCRTextOnlyError) {
         advancedTextOnlyError = withOCRTextOnlyContext(advancedError, {
           fallbackUsed: true,
-          profileUsed: getClientProfileCode(input.clientProfile),
           providerUsed: fallbackProvider.name,
         });
       }
@@ -113,7 +137,7 @@ export async function runOcrExtraction(input: {
       console.warn("[OCR] advanced provider failed for scanned PDF; trying primary provider", {
         fileName: input.fileName,
         provider: fallbackProvider.name,
-        profileCode: getClientProfileCode(input.clientProfile),
+        profileCode: getClientProfileCode(internalProfile),
         errorName: advancedError instanceof Error ? advancedError.name : typeof advancedError,
         errorMessage:
           advancedError instanceof Error
@@ -127,7 +151,7 @@ export async function runOcrExtraction(input: {
 
   try {
     primaryResult = await primaryProvider.extract({
-      ...input,
+      ...effectiveInput,
       preprocessing,
     });
   } catch (primaryError) {
@@ -136,7 +160,7 @@ export async function runOcrExtraction(input: {
       primaryProvider: primaryProvider.name,
       fallbackProvider: fallbackProvider.name,
       fallbackEnabled,
-      profileCode: getClientProfileCode(input.clientProfile),
+      profileCode: getClientProfileCode(internalProfile),
       errorName: primaryError instanceof Error ? primaryError.name : typeof primaryError,
       errorMessage:
         primaryError instanceof Error
@@ -151,7 +175,6 @@ export async function runOcrExtraction(input: {
     if (primaryError instanceof OCRTextOnlyError) {
       const primaryTextOnlyError = withOCRTextOnlyContext(primaryError, {
         fallbackUsed: false,
-        profileUsed: getClientProfileCode(input.clientProfile),
         providerUsed: primaryProvider.name,
       });
 
@@ -159,7 +182,7 @@ export async function runOcrExtraction(input: {
         try {
           return await runFallbackProviderOrThrow({
             fallbackProvider,
-            input,
+            input: effectiveInput,
             pagesProcessed: preprocessing.pagesProcessed,
             preprocessing,
             primaryError,
@@ -180,7 +203,7 @@ export async function runOcrExtraction(input: {
     if (fallbackEnabled && fallbackProvider.name !== primaryProvider.name) {
       return runFallbackProviderOrThrow({
         fallbackProvider,
-        input,
+        input: effectiveInput,
         pagesProcessed: preprocessing.pagesProcessed,
         preprocessing,
         primaryError,
@@ -191,10 +214,11 @@ export async function runOcrExtraction(input: {
     throw primaryError;
   }
 
-  const primaryAssessment = assessOCRQuality(primaryResult, input.clientProfile, preprocessing);
+  const resultProfile = primaryResult.internalProfile ?? internalProfile;
+  const primaryAssessment = assessOCRQuality(primaryResult, resultProfile, preprocessing);
   logOCRQualityAssessment({
     assessment: primaryAssessment,
-    profile: input.clientProfile,
+    profile: resultProfile,
     providerUsed: primaryProvider.name,
     rowsExtracted: primaryResult.extractedRows,
   });
@@ -205,7 +229,7 @@ export async function runOcrExtraction(input: {
       fallbackProvider: fallbackProvider.name,
       pagesProcessed: preprocessing.pagesProcessed,
       primaryProvider: primaryProvider.name,
-      profile: input.clientProfile,
+      profile: resultProfile,
     });
   }
 
@@ -216,7 +240,7 @@ export async function runOcrExtraction(input: {
   if (
     shouldAllowLocalFallbackResult(
       primaryResult,
-      input.clientProfile,
+      resultProfile,
       fallbackEnabled,
       fallbackProvider.name,
     )
@@ -237,7 +261,7 @@ export async function runOcrExtraction(input: {
       fallbackProvider: fallbackProvider.name,
       pagesProcessed: preprocessing.pagesProcessed,
       primaryProvider: primaryProvider.name,
-      profile: input.clientProfile,
+      profile: resultProfile,
     });
   }
 
@@ -246,14 +270,17 @@ export async function runOcrExtraction(input: {
       fileName: input.fileName,
       primaryProvider: primaryProvider.name,
       fallbackProvider: fallbackProvider.name,
-      profileCode: getClientProfileCode(input.clientProfile),
+      profileCode: getClientProfileCode(resultProfile),
       reason: primaryAssessment.reason,
     });
 
     try {
       return await runFallbackProviderOrThrow({
         fallbackProvider,
-        input,
+        input: {
+          ...effectiveInput,
+          clientProfile: resultProfile,
+        },
         pagesProcessed: preprocessing.pagesProcessed,
         preprocessing,
         primaryError: new CsvAnalysisError(
@@ -266,7 +293,7 @@ export async function runOcrExtraction(input: {
       console.warn("[OCR] fallback provider failed", {
         fileName: input.fileName,
         provider: fallbackProvider.name,
-        profileCode: getClientProfileCode(input.clientProfile),
+        profileCode: getClientProfileCode(resultProfile),
         errorName: fallbackError instanceof Error ? fallbackError.name : typeof fallbackError,
         errorMessage:
           fallbackError instanceof Error
@@ -277,7 +304,7 @@ export async function runOcrExtraction(input: {
       if (
         shouldAllowLocalFallbackResult(
           primaryResult,
-          input.clientProfile,
+          resultProfile,
           false,
           fallbackProvider.name,
         )
@@ -298,7 +325,7 @@ export async function runOcrExtraction(input: {
           fallbackProvider: fallbackProvider.name,
           pagesProcessed: preprocessing.pagesProcessed,
           primaryProvider: primaryProvider.name,
-          profile: input.clientProfile,
+          profile: resultProfile,
         });
       }
     }
@@ -344,17 +371,17 @@ async function runFallbackProviderOrThrow({
     if (error instanceof OCRTextOnlyError) {
       throw withOCRTextOnlyContext(error, {
         fallbackUsed: fallbackProvider.name !== primaryProviderName,
-        profileUsed: getClientProfileCode(input.clientProfile),
         providerUsed: fallbackProvider.name,
       });
     }
 
     throw error;
   }
-  const fallbackAssessment = assessOCRQuality(fallbackResult, input.clientProfile, preprocessing);
+  const fallbackProfile = fallbackResult.internalProfile ?? input.clientProfile;
+  const fallbackAssessment = assessOCRQuality(fallbackResult, fallbackProfile, preprocessing);
   logOCRQualityAssessment({
     assessment: fallbackAssessment,
-    profile: input.clientProfile,
+    profile: fallbackProfile,
     providerUsed: fallbackProvider.name,
     rowsExtracted: fallbackResult.extractedRows,
   });
@@ -365,7 +392,7 @@ async function runFallbackProviderOrThrow({
       fallbackProvider: fallbackProvider.name,
       pagesProcessed,
       primaryProvider: primaryProviderName,
-      profile: input.clientProfile,
+      profile: fallbackProfile,
     });
   }
 
@@ -375,7 +402,7 @@ async function runFallbackProviderOrThrow({
       extractionMode: "ocr_text_only",
       fallbackUsed: fallbackProvider.name !== primaryProviderName,
       pagesProcessed: fallbackResult.pagesProcessed ?? pagesProcessed,
-      profileUsed: getClientProfileCode(input.clientProfile),
+      profileUsed: getClientProfileCode(fallbackProfile),
       providerUsed: fallbackProvider.name,
       qualityScore: fallbackAssessment.confidence,
       qualityStatus: fallbackAssessment.requiresManualReview
@@ -407,6 +434,7 @@ function enrichOCRResult(
   return {
     ...result,
     confidence: context.assessment.confidence,
+    extractionType: context.profile?.userFacingExtractionType,
     fallbackProvider: context.fallbackProvider,
     pagesProcessed: result.pagesProcessed ?? context.pagesProcessed,
     primaryProvider: context.primaryProvider,

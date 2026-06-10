@@ -1,5 +1,9 @@
 import type { ClientProfile } from "@/lib/client-profiles";
-import { getClientProfileCode, isVisionTableProfile } from "@/lib/client-profiles";
+import {
+  getClientProfileCode,
+  isPersonnelRosterProfile,
+  isVisionTableProfile,
+} from "@/lib/client-profiles";
 import { parseCsvPreview } from "@/lib/csv-preview";
 import type { DocumentPreprocessingResult } from "@/lib/document-preprocessing";
 import type { CsvAnalysisResult } from "@/lib/google-ai";
@@ -46,6 +50,16 @@ export function assessOCRQuality(
       minConfidence,
       preprocessing,
       profile,
+      rows,
+      warnings,
+    });
+  }
+
+  if (isPersonnelRosterProfile(profile)) {
+    return assessPersonnelRosterResult({
+      columns,
+      confidence,
+      minConfidence,
       rows,
       warnings,
     });
@@ -105,6 +119,87 @@ export function assessOCRQuality(
     shouldFallback: false,
     warnings,
   };
+}
+
+function assessPersonnelRosterResult({
+  columns,
+  confidence,
+  minConfidence,
+  rows,
+  warnings,
+}: {
+  columns: string[];
+  confidence: number;
+  minConfidence: number;
+  rows: Record<string, string>[];
+  warnings: string[];
+}): OCRQualityAssessment {
+  const expectedColumns = [
+    "Numero",
+    "NombreApellido",
+    "CUIL",
+    "LugarTrabajo",
+    "Localidad",
+    "Provincia",
+  ];
+  const normalizedColumns = columns.map(normalizeColumn);
+  const missingColumns = expectedColumns.filter(
+    (column) => !normalizedColumns.includes(normalizeColumn(column)),
+  );
+  const hasGenericLineCsv = ["pagina", "linea", "texto"].every((column) =>
+    normalizedColumns.includes(column),
+  );
+  const validRows = rows.filter((row) => looksLikeCuil(String(row.CUIL ?? "")));
+
+  if (hasGenericLineCsv) {
+    return createAssessment({
+      confidence,
+      qualityStatus: "fallback_required",
+      reason: "Generic Pagina/Linea/Texto output is not valid for personnel rosters",
+      warnings,
+    });
+  }
+
+  if (missingColumns.length > 0) {
+    return createAssessment({
+      confidence,
+      qualityStatus: "fallback_required",
+      reason: `Personnel roster columns missing: ${missingColumns.join(", ")}`,
+      warnings,
+    });
+  }
+
+  if (validRows.length === 0) {
+    return createAssessment({
+      confidence: 0,
+      qualityStatus: "fallback_required",
+      reason: "No personnel rows with a valid CUIL anchor were extracted",
+      warnings,
+    });
+  }
+
+  if (confidence < minConfidence) {
+    return createAssessment({
+      confidence,
+      qualityStatus: "fallback_required",
+      reason: `Confidence ${confidence.toFixed(2)} below minimum ${minConfidence.toFixed(2)}`,
+      warnings,
+    });
+  }
+
+  return {
+    acceptable: true,
+    confidence,
+    qualityStatus: warnings.length > 0 ? "completed_with_warnings" : "completed",
+    reason: "Personnel roster quality gate passed",
+    requiresManualReview: false,
+    shouldFallback: false,
+    warnings,
+  };
+}
+
+function looksLikeCuil(value: string) {
+  return /^\d{2}[- ]?\d{7,8}[- ]?\d$/.test(value.trim());
 }
 
 function assessVisionTableProfileResult({
@@ -249,6 +344,14 @@ function estimateConfidence(
     return roundConfidence(
       explicitConfidence.reduce((total, value) => total + value, 0) / explicitConfidence.length,
     );
+  }
+
+  if (
+    isPersonnelRosterProfile(profile) &&
+    columns.length >= 6 &&
+    rows.some((row) => looksLikeCuil(String(row.CUIL ?? "")))
+  ) {
+    return 0.9;
   }
 
   const structuredQuality = assessExtractionQuality(columns, rows, {

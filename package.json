@@ -18,6 +18,7 @@
     "test:movimiento-quality-gate": "node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --loader ./scripts/alias-loader.mjs scripts/test-movimiento-quality-gate.mts",
     "test:movimiento-visual-pages": "node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --loader ./scripts/alias-loader.mjs scripts/test-movimiento-visual-pages.mts",
     "test:google-document-ai-provider": "node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --loader ./scripts/alias-loader.mjs scripts/test-google-document-ai-provider.mts",
+    "test:internal-profile-classifier": "node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --loader ./scripts/alias-loader.mjs scripts/test-internal-profile-classifier.mts",
     "test:master-access-code": "node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --loader ./scripts/alias-loader.mjs scripts/test-master-access-code.mts",
     "test:profile-code-not-access-code": "node --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --loader ./scripts/alias-loader.mjs scripts/test-profile-code-not-access-code.mts",
     "test:structured-output": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-structured-output.mts",

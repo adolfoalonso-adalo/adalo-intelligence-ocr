@@ -304,9 +304,13 @@ export function assessExtractionQuality(
   const isCommercialContext =
     context.documentType === "invoice" ||
     context.extractionProfile === "commercial-operations" ||
-    context.clientProfileId === "mateo";
+    context.clientProfileId === "mateo" ||
+    context.clientProfileId === "internal-dtve-senasa-arca" ||
+    context.clientProfileId === "internal-comprobante-generico";
   const isVisionTableContext =
-    context.extractionProfile === "vision-table" || context.clientProfileId === "movimiento";
+    context.extractionProfile === "vision-table" ||
+    context.clientProfileId === "movimiento" ||
+    context.clientProfileId === "internal-movimiento-camiones";
 
   if (isLocalTextFallback) {
     return {

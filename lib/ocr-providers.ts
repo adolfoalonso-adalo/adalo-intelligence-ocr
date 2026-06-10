@@ -1,7 +1,11 @@
-import type { ClientProfile } from "@/lib/client-profiles";
-import { getClientProfileCode } from "@/lib/client-profiles";
+import {
+  getClientProfileCode,
+  resolveDocumentTypeForProfile,
+  type ClientProfile,
+} from "@/lib/client-profiles";
 import type { DocumentPreprocessingResult } from "@/lib/document-preprocessing";
 import type { DocumentType } from "@/lib/document-type";
+import { parseCsvPreview } from "@/lib/csv-preview";
 import {
   analyzeExtractedDocumentToCsv,
   analyzeFileToCsv,
@@ -16,6 +20,8 @@ import {
   OCRTextOnlyError,
   sanitizeRawOcrText,
 } from "@/lib/ocr-diagnostics";
+import { classifyInternalOCRProfile } from "@/lib/internal-profile-classifier";
+import { recordsToCsv } from "@/lib/structured-output";
 
 export type OCRProviderName = "google-ai" | "advanced-document" | "google-document-ai";
 
@@ -29,6 +35,7 @@ export type OCRProviderInput = {
 };
 
 export type OCRProviderResult = CsvAnalysisResult & {
+  internalProfile?: ClientProfile;
   providerUsed: OCRProviderName;
   rawTextContent?: string;
   textLength?: number;
@@ -57,7 +64,8 @@ export class GoogleAIOCRProvider implements OCRProvider {
     );
 
     return {
-      ...result,
+      ...normalizeProviderResultForProfile(result, clientProfile),
+      internalProfile: clientProfile,
       providerUsed: this.name,
     };
   }
@@ -215,13 +223,29 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
 
     const rawTextContent = sanitizeRawOcrText(document.text);
     const tablesText = extractDocumentAiTablesText(document);
-    const clientProfile = await withCorrectionExamples(input.clientProfile);
+    const classification = classifyInternalOCRProfile({
+      configuredProfile: input.clientProfile,
+      fileName: input.fileName,
+      hasTableSignals: Boolean(tablesText),
+      text: rawTextContent,
+    });
+    const clientProfile = await withCorrectionExamples(classification.profile);
+    const documentType = resolveDocumentTypeForProfile(
+      classification.confidence === "low" ? input.documentType : "auto",
+      classification.profile,
+    );
+    console.info("[OCR] internal profile classified", {
+      confidence: classification.confidence,
+      profileUsed: getClientProfileCode(classification.profile),
+      reason: classification.reason,
+      providerUsed: this.name,
+    });
     let normalized: CsvAnalysisResult;
 
     try {
       normalized = await analyzeExtractedDocumentToCsv({
         clientProfile,
-        documentType: input.documentType,
+        documentType,
         extractedTablesText: tablesText,
         extractedText: rawTextContent,
         fileName: input.fileName,
@@ -234,7 +258,7 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
         extractionMode: "ocr_text_only",
         fallbackUsed: false,
         pagesProcessed: document.pages?.length ?? 0,
-        profileUsed: getClientProfileCode(input.clientProfile),
+        profileUsed: getClientProfileCode(classification.profile),
         providerUsed: this.name,
         qualityScore: 0.5,
         qualityStatus: "failed_quality_gate",
@@ -249,7 +273,8 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
     }
 
     return {
-      ...normalized,
+      ...normalizeProviderResultForProfile(normalized, classification.profile),
+      internalProfile: classification.profile,
       providerUsed: this.name,
       rawTextContent,
       textLength: rawTextContent.length,
@@ -259,6 +284,82 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
       ],
     };
   }
+}
+
+function normalizeProviderResultForProfile(
+  result: CsvAnalysisResult,
+  profile?: ClientProfile,
+): CsvAnalysisResult {
+  if (profile?.defaultExtractionProfile !== "personnel-roster") {
+    return result;
+  }
+
+  const columns = [
+    "Numero",
+    "NombreApellido",
+    "CUIL",
+    "LugarTrabajo",
+    "Localidad",
+    "Provincia",
+  ];
+  const parsed = parseCsvPreview(result.csvContent);
+  const parsedRows = parsed.rows.map((values) =>
+    Object.fromEntries(parsed.columns.map((column, index) => [column, values[index] ?? ""])),
+  );
+  const normalizedRows = parsedRows
+    .map((row) => {
+      const normalized: Record<string, string> = {};
+
+      for (const column of columns) {
+        normalized[column] = normalizePersonnelValue(column, findRowValue(row, column));
+      }
+
+      return normalized;
+    });
+  const rowsWithCuil = normalizedRows.filter((row) =>
+    /^\d{2}[- ]?\d{7,8}[- ]?\d$/.test(row.CUIL),
+  );
+  const finalRows = rowsWithCuil.length > 0 ? rowsWithCuil : normalizedRows;
+
+  return {
+    ...result,
+    csvContent: recordsToCsv(columns, finalRows),
+    extractedRows: finalRows.length,
+    jsonColumns: columns,
+    jsonRows: finalRows,
+    rowsExtracted: finalRows.length,
+  };
+}
+
+function findRowValue(row: Record<string, string>, expectedColumn: string) {
+  const expected = normalizeColumnName(expectedColumn);
+  const sourceColumn = Object.keys(row).find(
+    (column) => normalizeColumnName(column) === expected,
+  );
+
+  return sourceColumn ? row[sourceColumn] : "";
+}
+
+function normalizePersonnelValue(column: string, value: string) {
+  let normalized = String(value ?? "").replace(/\s+/g, " ").trim();
+
+  if (column === "Localidad") {
+    normalized = normalized.replace(/^(?:OD|D|0|00|10)\s+/i, "");
+  }
+
+  return normalized
+    .replace(/\bSatta\b/gi, "Salta")
+    .replace(/\bJWUY\b/gi, "Jujuy")
+    .replace(/\bCampo Quljano\b/gi, "Campo Quijano")
+    .replace(/\bGeneral Mosconl\b/gi, "General Mosconi");
+}
+
+function normalizeColumnName(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "")
+    .toLowerCase();
 }
 
 function getSafeNormalizationFailureReason(error: unknown) {

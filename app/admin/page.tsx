@@ -184,10 +184,11 @@ export default async function AdminPage() {
             <Input name="contactName" placeholder="Contacto" />
             <Input name="phone" placeholder="Telefono" />
             <select name="profileId" className={fieldClassName}>
-              <option value="general">general</option>
-              <option value="mateo">mateo</option>
-              <option value="movimiento">movimiento</option>
-              <option value="custom">custom</option>
+              <option value="internal-general">Deteccion automatica</option>
+              <option value="internal-dtve-senasa-arca">Restringir a DTVe / SENASA / ARCA</option>
+              <option value="internal-movimiento-camiones">Restringir a movimiento de camiones</option>
+              <option value="internal-nomina-personal">Restringir a nomina de personal</option>
+              <option value="internal-tabla-administrativa">Restringir a tabla administrativa</option>
             </select>
             <select name="planId" className={fieldClassName}>
               <option value="">Sin plan</option>
@@ -246,10 +247,11 @@ export default async function AdminPage() {
                             <Input name="contactName" defaultValue={client.contactName ?? ""} placeholder="Contacto" />
                             <Input name="phone" defaultValue={client.phone ?? ""} placeholder="Telefono" />
                             <select name="profileId" defaultValue={client.profileId} className={fieldClassName}>
-                              <option value="general">general</option>
-                              <option value="mateo">mateo</option>
-                              <option value="movimiento">movimiento</option>
-                              <option value="custom">custom</option>
+                              <option value="internal-general">Deteccion automatica</option>
+                              <option value="internal-dtve-senasa-arca">Restringir a DTVe / SENASA / ARCA</option>
+                              <option value="internal-movimiento-camiones">Restringir a movimiento de camiones</option>
+                              <option value="internal-nomina-personal">Restringir a nomina de personal</option>
+                              <option value="internal-tabla-administrativa">Restringir a tabla administrativa</option>
                             </select>
                             <select name="planId" defaultValue={client.planId ?? ""} className={fieldClassName}>
                               <option value="">Sin plan</option>

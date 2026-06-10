@@ -2196,7 +2196,7 @@ function validateVisionTableProfileOutput({
 
   if (hasGenericLineCsv) {
     throw new ProfileExtractionValidationError(
-      "La extracción básica no es adecuada para este documento. Reprocesar con OCR visual de tablas usando el perfil ADALO-2026-MOVIMIENTO.",
+      "La extraccion basica no es adecuada para este documento. Se requiere OCR visual de tablas.",
       "PROFILE_REJECTED_GENERIC_LINE_CSV",
     );
   }
@@ -2259,7 +2259,7 @@ function createVisionTableProfileFailure(error: unknown) {
   if (error instanceof ProfileExtractionValidationError) return error;
 
   return new ProfileExtractionValidationError(
-    "La extracción básica no es adecuada para este documento. Reprocesar con OCR visual de tablas usando el perfil ADALO-2026-MOVIMIENTO.",
+    "La extraccion basica no es adecuada para este documento. Se requiere OCR visual de tablas.",
     summarizeSafeError(error),
   );
 }

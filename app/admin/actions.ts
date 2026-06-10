@@ -22,7 +22,7 @@ export async function createClientAction(formData: FormData) {
       notes: readFormValue(formData, "notes") || null,
       phone: readFormValue(formData, "phone") || null,
       planId: readFormValue(formData, "planId") || null,
-      profileId: readFormValue(formData, "profileId") || "general",
+      profileId: readFormValue(formData, "profileId") || "internal-general",
       status: readFormValue(formData, "status") || "active",
     },
   });
@@ -68,7 +68,7 @@ export async function updateClientAction(formData: FormData) {
       notes: readFormValue(formData, "notes") || null,
       phone: readFormValue(formData, "phone") || null,
       planId: readFormValue(formData, "planId") || null,
-      profileId: readFormValue(formData, "profileId") || "general",
+      profileId: readFormValue(formData, "profileId") || "internal-general",
       status: readFormValue(formData, "status") || "active",
     },
   });

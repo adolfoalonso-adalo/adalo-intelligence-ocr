@@ -70,7 +70,10 @@ export async function getOcrUsageContext(payload: AccessSessionPayload | null): 
   const context: OcrPlanContext = {
     accessCodeId: accessCode.id,
     clientId: accessCode.clientId,
-    clientProfileId: accessCode.client.profileId || payload.clientProfileId || "general",
+    clientProfileId:
+      accessCode.client.profileId ||
+      payload.clientProfileId ||
+      "internal-general",
     planId: accessCode.planId,
     plan: {
       allowJsonExport: accessCode.plan.allowJsonExport,

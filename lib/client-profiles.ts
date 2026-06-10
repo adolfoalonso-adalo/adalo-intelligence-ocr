@@ -4,6 +4,7 @@ import type { DocumentType } from "@/lib/document-type";
 export type ExtractionProfile =
   | "commercial-operations"
   | "general"
+  | "personnel-roster"
   | "table-list"
   | "technical-admin"
   | "vision-table";
@@ -18,7 +19,6 @@ export type ClientProfile = {
   id: string;
   code?: string;
   label: string;
-  accessCodeAlias?: string;
   documentType?: string;
   extractionMode?: ExtractionMode;
   expectedColumns?: readonly string[];
@@ -39,16 +39,17 @@ export type ClientProfile = {
 const PROFILE_COOKIE_NAME = "adalo_ocr_client_profile";
 
 const GENERAL_PROFILE: ClientProfile = {
-  id: "general",
-  label: "General",
+  id: "internal-general",
+  label: "Documento general",
   preferredDocumentTypes: [],
   defaultExtractionProfile: "general",
+  userFacingExtractionType: "Documento administrativo",
 };
 
 const CLIENT_PROFILES: ClientProfile[] = [
   GENERAL_PROFILE,
   {
-    id: "technical-admin",
+    id: "internal-documento-tecnico-administrativo",
     label: "Documento tecnico-administrativo",
     defaultExtractionProfile: "technical-admin",
     extractionMode: "text_chunks",
@@ -65,9 +66,8 @@ const CLIENT_PROFILES: ClientProfile[] = [
 Extrae datos por secciones, fechas, expedientes, resoluciones, empresas, ubicaciones, indicadores y observaciones. No devuelvas Pagina/Linea/Texto salvo como ultimo fallback local.`,
   },
   {
-    id: "mateo",
-    label: "Mateo / Papas",
-    accessCodeAlias: process.env.ACCESS_PROFILE_MATEO_CODE_ALIAS || "ADALO-2026-MATEO",
+    id: "internal-dtve-senasa-arca",
+    label: "Comprobante operativo",
     defaultExtractionProfile: "commercial-operations",
     preferredDocumentTypes: [
       "comprobantes",
@@ -106,10 +106,18 @@ Reglas:
 - Responder JSON valido con columns y rows.`,
   },
   {
-    id: "movimiento",
-    code: "ADALO-2026-MOVIMIENTO",
-    label: "Tabla de movimientos logisticos",
-    accessCodeAlias: process.env.ACCESS_PROFILE_MOVIMIENTO_CODE_ALIAS || "ADALO-2026-MOVIMIENTO",
+    id: "internal-comprobante-generico",
+    label: "Comprobante",
+    defaultExtractionProfile: "commercial-operations",
+    preferredDocumentTypes: ["facturas", "tickets", "recibos", "remitos", "comprobantes"],
+    userFacingExtractionType: "Comprobante",
+    promptHint: `Actua como un sistema OCR especializado en comprobantes comerciales.
+
+Si el documento representa una unica operacion, devuelve una fila consolidada. Si contiene detalle de productos o servicios, devuelve una fila por detalle repitiendo los datos generales. Conserva identificadores, fechas, CUIT, importes y codigos como texto.`,
+  },
+  {
+    id: "internal-movimiento-camiones",
+    label: "Movimiento de camiones",
     documentType: "scanned_logistics_table",
     extractionMode: "vision_table",
     defaultExtractionProfile: "vision-table",
@@ -166,7 +174,7 @@ Reglas:
     userFacingExtractionType: "OCR visual tabular",
     promptHint: `Actua como un sistema OCR visual tabular especializado en tablas escaneadas de movimientos logisticos de camiones y logistica minera.
 
-Perfil: ADALO-2026-MOVIMIENTO.
+Perfil interno: internal-movimiento-camiones.
 Documento esperado: tabla logistica escaneada, incluso si viene de CamScanner, esta inclinada, tiene sombras, sellos, bordes, marcas de agua, paginas rotadas o encabezados repetidos/incompletos.
 
 Tu tarea es reconstruir la tabla completa por filas. Ignora marcas de agua, sellos, folios, bordes, sombras, URLs externas y textos como "Escaneado con CamScanner", "CamScanner" o "https://v3.camscanner.com".
@@ -188,26 +196,71 @@ Reglas:
 - Responde JSON valido con columns y rows.
 - En cada row incluye tambien pageNumber, rowNumber, confidence y warnings para el JSON; esas columnas auxiliares no deben reemplazar las columnas principales.`,
   },
+  {
+    id: "internal-nomina-personal",
+    label: "Nómina de personal",
+    documentType: "personnel_roster",
+    extractionMode: "text_chunks",
+    defaultExtractionProfile: "personnel-roster",
+    preferredDocumentTypes: ["nomina del personal", "cuil", "lugar de trabajo", "personal"],
+    expectedColumns: [
+      "Numero",
+      "NombreApellido",
+      "CUIL",
+      "LugarTrabajo",
+      "Localidad",
+      "Provincia",
+    ],
+    validationRules: {
+      allowEmptyCells: true,
+      rejectGenericLineCsv: true,
+      requireTableStructure: true,
+      requiredColumns: [
+        "Numero",
+        "NombreApellido",
+        "CUIL",
+        "LugarTrabajo",
+        "Localidad",
+        "Provincia",
+      ],
+    },
+    csvTemplate: "personnel-roster",
+    userFacingExtractionType: "Nómina de personal",
+    promptHint: `Actua como un sistema OCR especializado en nominas de personal escaneadas o digitales.
+
+Usa exactamente estas columnas y este orden:
+Numero, NombreApellido, CUIL, LugarTrabajo, Localidad, Provincia.
+
+Reglas:
+- Usa el CUIL como ancla para reconstruir cada fila.
+- Si detectas mas de 100 CUIL, estructura todas las filas por patron aunque el OCR no haya detectado una tabla explicita.
+- Limpia ruido OCR aislado antes de Localidad, como OD, D, 0, 00 o 10.
+- Normaliza errores evidentes: Satta a Salta, JWUY a Jujuy, Campo Quljano a Campo Quijano y General Mosconl a General Mosconi.
+- No inventes personas ni CUIL.
+- Conserva una fila por persona.
+- Si una celda es ilegible, dejala vacia.
+- No devuelvas Pagina, Linea, Texto.`,
+  },
+  {
+    id: "internal-tabla-administrativa",
+    label: "Documento administrativo",
+    extractionMode: "direct_file",
+    defaultExtractionProfile: "table-list",
+    preferredDocumentTypes: ["tabla", "listado", "registro", "planilla", "padron"],
+    userFacingExtractionType: "Documento administrativo",
+    promptHint: `Actua como un sistema OCR especializado en tablas y listados administrativos. Conserva los encabezados originales, genera una fila por registro y no mezcles celdas entre filas.`,
+  },
 ];
 
 export function getClientProfileById(profileId?: string | null): ClientProfile {
-  return CLIENT_PROFILES.find((profile) => profile.id === profileId) ?? GENERAL_PROFILE;
+  const normalizedId = normalizeLegacyProfileId(profileId);
+  return CLIENT_PROFILES.find((profile) => profile.id === normalizedId) ?? GENERAL_PROFILE;
 }
 
+/** @deprecated Access codes no longer select OCR profiles. */
 export function resolveClientProfileForAccessCode(code: string): ClientProfile {
-  const normalizedCode = normalizeAccessCodeAlias(code);
-
-  if (isReservedInternalProfileCode(normalizedCode)) {
-    return GENERAL_PROFILE;
-  }
-
-  return (
-    CLIENT_PROFILES.find(
-      (profile) =>
-        profile.accessCodeAlias &&
-        safeCompare(normalizedCode, normalizeAccessCodeAlias(profile.accessCodeAlias)),
-    ) ?? GENERAL_PROFILE
-  );
+  void code;
+  return GENERAL_PROFILE;
 }
 
 export function createClientProfileCookie(profileId: string): string {
@@ -249,6 +302,10 @@ export function resolveDocumentTypeForProfile(
     return "table";
   }
 
+  if (profile.defaultExtractionProfile === "personnel-roster") {
+    return "table";
+  }
+
   if (profile.defaultExtractionProfile === "technical-admin") {
     return "report";
   }
@@ -265,15 +322,27 @@ export function isVisionTableProfile(profile?: ClientProfile | null) {
 }
 
 export function getClientProfileCode(profile?: ClientProfile | null) {
-  return profile?.code || profile?.accessCodeAlias || profile?.id || "general";
+  return profile?.id || GENERAL_PROFILE.id;
 }
 
-function normalizeAccessCodeAlias(code: string) {
-  return code.trim().toUpperCase();
+export function isPersonnelRosterProfile(profile?: ClientProfile | null) {
+  return profile?.defaultExtractionProfile === "personnel-roster";
 }
 
-function isReservedInternalProfileCode(code: string) {
-  return code === "ADALO-2026-MATEO" || code === "ADALO-2026-MOVIMIENTO";
+function normalizeLegacyProfileId(profileId?: string | null) {
+  const normalized = (profileId || "").trim().toLowerCase();
+  const aliases: Record<string, string> = {
+    "": GENERAL_PROFILE.id,
+    auto: GENERAL_PROFILE.id,
+    custom: GENERAL_PROFILE.id,
+    general: GENERAL_PROFILE.id,
+    "internal-general": GENERAL_PROFILE.id,
+    mateo: "internal-dtve-senasa-arca",
+    movimiento: "internal-movimiento-camiones",
+    "technical-admin": "internal-documento-tecnico-administrativo",
+  };
+
+  return aliases[normalized] ?? normalized;
 }
 
 function signProfileId(profileId: string) {

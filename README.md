@@ -269,15 +269,32 @@ Si no hay señales claras, la app usa modo `auto` y el motor decide la estructur
 
 Los archivos en `test-files/` se usan solo para pruebas de desarrollo. Los documentos reales se procesan desde la carga en la UI.
 
-## Perfiles documentales internos
+## Codigos de acceso y perfiles OCR internos
+
+Los codigos de acceso solo autentican, aplican planes y habilitan el uso del OCR. El texto del codigo no selecciona prompts ni quality gates. Por ejemplo, `ADALO-2026-MATEO` puede ser un codigo comercial valido sin representar un perfil documental.
+
+La seleccion documental se realiza despues de recuperar senales del archivo y del texto OCR. Los perfiles iniciales son:
+
+- `internal-general`
+- `internal-tabla-administrativa`
+- `internal-movimiento-camiones`
+- `internal-nomina-personal`
+- `internal-dtve-senasa-arca`
+- `internal-comprobante-generico`
+
+El clasificador reconoce encabezados, patrones como CUIL, campos logisticos, indicadores DTVe/SENASA/ARCA y senales tabulares. Luego aplica el prompt y el quality gate del perfil detectado. El usuario final solo ve un nombre amigable como `Nomina de personal`, `Movimiento de camiones` o `Documento administrativo`.
+
+El administrador puede definir una restriccion documental opcional mediante `profileId`. El valor recomendado por defecto es `internal-general`, que mantiene la deteccion automatica. Los aliases historicos `general`, `mateo`, `movimiento` y `technical-admin` siguen siendo compatibles con registros existentes.
+
+### Compatibilidad historica de perfiles
 
 La herramienta puede adaptar internamente el prompt y la estructura CSV segun el perfil asociado al cliente o al modo de prueba master. Esto no se muestra al usuario final y no requiere que el usuario elija categorias.
 
-`ADALO-2026-MATEO` y `ADALO-2026-MOVIMIENTO` son identificadores documentales internos, no codigos de acceso publicos. No validan como PIN aunque sus hashes esten por error en `ACCESS_CODE_HASHES`.
+Los nombres historicos `ADALO-2026-MATEO` y `ADALO-2026-MOVIMIENTO` ya no seleccionan perfiles por coincidencia textual. Si existen como codigos comerciales validos, autentican como cualquier otro codigo.
 
-El perfil inicial `ADALO-2026-MATEO` usa la plantilla `commercial-operations`, orientada a comprobantes, facturas, tickets, remitos, SENASA, ARCA, DTVe, CADTV, certificados de carga, documentos de movimiento, productos agro/comerciales y transporte.
+El alias historico `mateo` resuelve a `internal-dtve-senasa-arca`, que usa la plantilla `commercial-operations`.
 
-El perfil `ADALO-2026-MOVIMIENTO` usa la plantilla `vision-table`, orientada a tablas escaneadas de movimientos logisticos de camiones y logistica minera. Esta diseñado para PDFs o imagenes con paginas inclinadas, sombras, marcas de CamScanner, sellos o encabezados incompletos.
+El alias historico `movimiento` resuelve a `internal-movimiento-camiones`, que usa la plantilla `vision-table` para tablas escaneadas de logistica.
 
 Columnas esperadas:
 
@@ -286,9 +303,9 @@ FechaSalida, CantidadCamion, Unidad, Tons, Proveedor, Producto, Origen,
 RutaCaminosPuna, Destino, FechaArribo, CantidadEscoltas
 ```
 
-Para este perfil, la salida CSV final debe contener solo esas columnas de tabla. El JSON agrega metadata por fila como `pageNumber`, `rowNumber`, `confidence` y `warnings`. Si el resultado contiene columnas genericas `Pagina`, `Linea` y `Texto`, la extraccion se considera fallida y la API devuelve un mensaje claro para reprocesar con OCR visual tabular usando el perfil `ADALO-2026-MOVIMIENTO`.
+Para este perfil, la salida CSV final debe contener solo esas columnas de tabla. El JSON agrega metadata por fila como `pageNumber`, `rowNumber`, `confidence` y `warnings`. Si el resultado contiene columnas genericas `Pagina`, `Linea` y `Texto`, la extraccion se considera fallida.
 
-Para PDFs escaneados o de CamScanner del perfil `movimiento`, la app no acepta el fallback local `Pagina/Linea/Texto`. Primero intenta analisis visual del archivo completo; si no pasa el quality gate, renderiza paginas del PDF como imagenes y procesa cada pagina con un prompt especifico de tabla logistica. Luego une filas validas, elimina encabezados repetidos, descarta marcas de CamScanner/sellos/folios y vuelve a ejecutar el quality gate. Si no reconstruye una tabla valida, falla con `failed_quality_gate_movimiento` y no entrega CSV/JSON descargable como exito.
+Para PDFs escaneados o de CamScanner clasificados como `internal-movimiento-camiones`, la app no acepta el fallback local `Pagina/Linea/Texto`. Si no reconstruye una tabla valida, falla con `failed_quality_gate_movimiento` y no entrega CSV/JSON descargable como exito.
 
 La arquitectura de perfiles queda preparada para futuros codigos con:
 
@@ -304,7 +321,7 @@ La arquitectura de perfiles queda preparada para futuros codigos con:
 - formato de salida CSV/JSON;
 - mensajes de error propios.
 
-Los codigos comerciales reales se generan desde `/admin` y quedan asociados a un cliente, plan y `profileId`. Para pruebas internas, el admin usa un codigo maestro configurado en `MASTER_ACCESS_CODE_HASH`; en ese modo se puede seleccionar `general`, `mateo`, `movimiento` o `technical-admin` como perfil de prueba sin convertir esos perfiles en codigos publicos.
+Los codigos comerciales reales se generan desde `/admin`. `profileId` es una restriccion administrativa opcional, no una propiedad derivada del codigo. Para pruebas internas, el modo master puede forzar un perfil sin convertirlo en codigo publico.
 
 Este patron permite mejorar velocidad y calidad para clientes con documentos repetitivos, manteniendo la UI simple.
 
@@ -401,7 +418,7 @@ Estados de calidad:
 - `fallback_required`
 - `manual_review_required`
 
-Para `ADALO-2026-MOVIMIENTO`, el quality gate exige exactamente estas columnas:
+Para `internal-movimiento-camiones`, el quality gate exige exactamente estas columnas:
 
 ```text
 FechaSalida, CantidadCamion, Unidad, Tons, Proveedor, Producto, Origen,

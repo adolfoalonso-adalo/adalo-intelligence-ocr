@@ -3,6 +3,7 @@ import { extractPdfTextByPages } from "@/lib/pdf-text";
 
 export type DocumentPreprocessingResult = {
   documentKind: "digital_pdf" | "scanned_pdf" | "image" | "unknown";
+  extractedText?: string;
   hasReliableDigitalText: boolean;
   hasTableSignals: boolean;
   ignoredTextDetected: string[];
@@ -21,8 +22,9 @@ export async function analyzeDocumentForOcr(input: {
   if (input.mimeType === "image/jpeg" || input.mimeType === "image/png") {
     return {
       documentKind: "image",
+      extractedText: "",
       hasReliableDigitalText: false,
-      hasTableSignals: true,
+      hasTableSignals: false,
       ignoredTextDetected: [],
       pagesProcessed: 1,
       rotationDetected: false,
@@ -34,6 +36,7 @@ export async function analyzeDocumentForOcr(input: {
   if (input.mimeType !== "application/pdf") {
     return {
       documentKind: "unknown",
+      extractedText: "",
       hasReliableDigitalText: false,
       hasTableSignals: false,
       ignoredTextDetected: [],
@@ -54,6 +57,7 @@ export async function analyzeDocumentForOcr(input: {
 
     return {
       documentKind: hasReliableDigitalText ? "digital_pdf" : "scanned_pdf",
+      extractedText: fullText,
       hasReliableDigitalText,
       hasTableSignals,
       ignoredTextDetected,
@@ -82,6 +86,7 @@ export async function analyzeDocumentForOcr(input: {
 
     return {
       documentKind: "scanned_pdf",
+      extractedText: "",
       hasReliableDigitalText: false,
       hasTableSignals: false,
       ignoredTextDetected: [],
