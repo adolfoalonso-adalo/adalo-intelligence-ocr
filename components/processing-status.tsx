@@ -134,7 +134,7 @@ function getErrorTitle(details?: string) {
   }
 
   if (normalized.includes("no pudimos estructurar el archivo")) {
-    return "No pudimos estructurar el archivo";
+    return "No pudimos estructurar el archivo con suficiente confianza";
   }
 
   if (normalized.includes("no se pudo estructurar la tabla logistica")) {
@@ -176,7 +176,7 @@ function getErrorDescription(details?: string) {
   }
 
   if (normalized.includes("no pudimos estructurar el archivo")) {
-    return "El documento fue leido parcialmente, pero no se obtuvo una tabla confiable. Proba con una imagen mas nitida o mas centrada.";
+    return "El OCR logró recuperar texto, pero el archivo presenta baja nitidez, rotación, columnas poco definidas o información desalineada. Podés descargar el texto OCR bruto o volver a intentar con una imagen más clara.";
   }
 
   if (normalized.includes("no se pudo estructurar la tabla logistica")) {

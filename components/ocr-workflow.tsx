@@ -1,13 +1,17 @@
 "use client";
 
 import { upload } from "@vercel/blob/client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { CsvResultsPreview } from "@/components/csv-results-preview";
 import { DownloadCsvButton } from "@/components/download-csv-button";
 import { DownloadJsonButton } from "@/components/download-json-button";
 import { DownloadRawTextButton } from "@/components/download-raw-text-button";
 import { PdfDropzone } from "@/components/pdf-dropzone";
 import { ProcessingStatus } from "@/components/processing-status";
+import {
+  ProcessingProgress,
+  type ProcessingProgressStage,
+} from "@/components/processing-progress";
 import { Spinner } from "@/components/spinner";
 import { parseCsvPreview } from "@/lib/csv-preview";
 import { getSupportedMimeType } from "@/lib/validations";
@@ -31,6 +35,23 @@ type PersonnelQualityMetrics = {
   filasConProvincia: number;
   porcentajeCompletitud: number;
   totalRegistros: number;
+};
+
+type ProcessingProgressState = {
+  currentStep: string;
+  debugStage?: string;
+  detailMessage: string;
+  isIndeterminate: boolean;
+  percentage: number;
+  stage: ProcessingProgressStage;
+};
+
+const INITIAL_PROGRESS: ProcessingProgressState = {
+  currentStep: "Preparando archivo…",
+  detailMessage: "Estamos preparando el circuito de procesamiento.",
+  isIndeterminate: false,
+  percentage: 0,
+  stage: "preparing",
 };
 
 type ProcessResponse = {
@@ -98,7 +119,10 @@ export function OcrWorkflow({
   const [textOnlyDiagnostic, setTextOnlyDiagnostic] =
     useState<OcrTextOnlyDiagnostic | null>(null);
   const [testProfileId, setTestProfileId] = useState<TestProfileId>("general");
-  const [uploadProgress, setUploadProgress] = useState(0);
+  const [processingStartedAt, setProcessingStartedAt] = useState<number | null>(null);
+  const [ocrStartedAt, setOcrStartedAt] = useState<number | null>(null);
+  const [progress, setProgress] =
+    useState<ProcessingProgressState>(INITIAL_PROGRESS);
   const [result, setResult] = useState<{
     csvContent: string;
     fileName: string;
@@ -115,6 +139,33 @@ export function OcrWorkflow({
     personnelQualityMetrics?: PersonnelQualityMetrics;
   } | null>(null);
   const parsedResult = result ? parseCsvPreview(result.csvContent) : null;
+  const showProcessingProgress =
+    processingStartedAt !== null &&
+    (status === "uploading" ||
+      status === "processing" ||
+      status === "done" ||
+      status === "error");
+  const isLargeOrExtendedDocument =
+    file !== null &&
+    (file.size > 2 * 1024 * 1024 || file.type === "application/pdf");
+
+  useEffect(() => {
+    if (status !== "processing" || !file || !ocrStartedAt) return;
+
+    const updateEstimatedProgress = () => {
+      setProgress(
+        getEstimatedOcrProgress({
+          elapsedMs: Date.now() - ocrStartedAt,
+          isPdf: file.type === "application/pdf",
+        }),
+      );
+    };
+
+    updateEstimatedProgress();
+    const intervalId = window.setInterval(updateEstimatedProgress, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [file, ocrStartedAt, status]);
 
   function handleFileSelected(selectedFile: File) {
     setFile(null);
@@ -122,7 +173,9 @@ export function OcrWorkflow({
     setError("");
     setTechnicalDetail("");
     setTextOnlyDiagnostic(null);
-    setUploadProgress(0);
+    setProcessingStartedAt(null);
+    setOcrStartedAt(null);
+    setProgress(INITIAL_PROGRESS);
     setStatus("validating");
 
     window.setTimeout(() => {
@@ -146,22 +199,36 @@ export function OcrWorkflow({
     setError("");
     setTechnicalDetail("");
     setTextOnlyDiagnostic(null);
-    setUploadProgress(0);
+    setProcessingStartedAt(null);
+    setOcrStartedAt(null);
+    setProgress(INITIAL_PROGRESS);
     setStatus("idle");
   }
 
   async function processDocument() {
-    if (!file || status !== "ready") return;
+    if (!file || (status !== "ready" && status !== "error")) return;
 
+    const startedAt = Date.now();
+    setProcessingStartedAt(startedAt);
+    setOcrStartedAt(null);
+    setProgress(INITIAL_PROGRESS);
     setStatus("uploading");
     setError("");
     setTechnicalDetail("");
     setTextOnlyDiagnostic(null);
     setResult(null);
-    setUploadProgress(0);
 
     try {
       const mimeType = getSupportedMimeType(file);
+      await waitForProgressPaint();
+      setProgress({
+        currentStep: "Subiendo documento de forma segura…",
+        debugStage: "upload:start",
+        detailMessage: "La carga se realiza mediante un canal temporal y seguro.",
+        isIndeterminate: false,
+        percentage: 10,
+        stage: "uploading",
+      });
       const pathname = `${uploadPrefix}${Date.now()}-${sanitizeBlobFileName(file.name)}`;
       console.info("upload:start", {
         endpoint: "/api/upload",
@@ -181,7 +248,15 @@ export function OcrWorkflow({
           size: file.size,
         }),
         onUploadProgress: ({ percentage }) => {
-          setUploadProgress(Math.round(percentage));
+          const roundedPercentage = Math.round(percentage);
+          setProgress({
+            currentStep: "Subiendo documento de forma segura…",
+            debugStage: "upload:start",
+            detailMessage: `Carga segura del archivo: ${roundedPercentage}%`,
+            isIndeterminate: false,
+            percentage: roundedPercentage >= 50 ? 25 : 10,
+            stage: "uploading",
+          });
         },
       });
 
@@ -190,8 +265,16 @@ export function OcrWorkflow({
         method: "POST",
         pathname: blob.pathname,
       });
-      setUploadProgress(100);
+      setProgress({
+        currentStep: "Archivo cargado correctamente…",
+        debugStage: "upload:complete",
+        detailMessage: "La carga terminó. Estamos iniciando el análisis documental.",
+        isIndeterminate: true,
+        percentage: 40,
+        stage: "preprocessing",
+      });
       setStatus("processing");
+      setOcrStartedAt(Date.now());
 
       console.info("ocr:start", {
         endpoint: "/api/ocr/process",
@@ -249,6 +332,15 @@ export function OcrWorkflow({
         });
         setError(data.error || "No pudimos estructurar el archivo");
         setTechnicalDetail(data.technicalDetail || "");
+        setProgress({
+          currentStep: "No pudimos estructurar el archivo con suficiente confianza",
+          debugStage: "quality-gate:failed",
+          detailMessage:
+            "El OCR logró recuperar texto, pero el archivo presenta baja nitidez, rotación, columnas poco definidas o información desalineada. Podés descargar el texto OCR bruto o volver a intentar con una imagen más clara.",
+          isIndeterminate: false,
+          percentage: 90,
+          stage: "error",
+        });
         setStatus("error");
         return;
       }
@@ -274,6 +366,15 @@ export function OcrWorkflow({
         durationMs: data.durationMs,
         personnelQualityMetrics: data.personnelQualityMetrics,
       });
+      setProgress({
+        currentStep: "Procesamiento completado",
+        debugStage: "cleanup:complete",
+        detailMessage:
+          "Los datos fueron estructurados correctamente y ya podés descargar los resultados.",
+        isIndeterminate: false,
+        percentage: 100,
+        stage: "completed",
+      });
       setStatus("done");
     } catch (caughtError) {
       const message = toSafeClientErrorMessage(caughtError);
@@ -283,6 +384,15 @@ export function OcrWorkflow({
           : "";
       setError(message);
       setTechnicalDetail(safeTechnicalDetail);
+      setProgress((currentProgress) => ({
+        currentStep: "No pudimos completar el procesamiento",
+        debugStage: "processing:error",
+        detailMessage:
+          "El proceso se detuvo. Revisá el diagnóstico y volvé a intentar o cambiá el archivo.",
+        isIndeterminate: false,
+        percentage: currentProgress.percentage,
+        stage: "error",
+      }));
       setStatus("error");
     }
   }
@@ -327,16 +437,11 @@ export function OcrWorkflow({
         <p>Reconocimiento optimizado para documentos administrativos, tecnicos y comerciales.</p>
       </div>
 
-      <ProcessingStatus
-        status={status}
-        details={
-          status === "processing" && file
-            ? file.size > 2 * 1024 * 1024
-              ? "Archivo cargado, iniciando OCR. Estamos analizando el contenido para generar una salida estructurada. Puede demorar unos minutos."
-              : "Archivo cargado, iniciando OCR. Estamos identificando la estructura del documento y preparando los datos para exportar."
-            : status === "uploading"
-              ? `Subiendo archivo... ${uploadProgress}%`
-            : status === "done" && result
+      {status !== "uploading" && status !== "processing" ? (
+        <ProcessingStatus
+          status={status}
+          details={
+            status === "done" && result
               ? buildSuccessDetails(
                   result.extractedRows,
                   parsedResult?.columns.length,
@@ -346,11 +451,27 @@ export function OcrWorkflow({
               : status === "ready"
                 ? "Ya podes presionar \"Procesar documento\"."
                 : error
-        }
-        resultQuality={status === "done" ? result?.resultQuality : undefined}
-        technicalDetail={status === "error" ? technicalDetail : ""}
-        diagnostic={status === "error" ? textOnlyDiagnostic : null}
-      />
+          }
+          resultQuality={status === "done" ? result?.resultQuality : undefined}
+          technicalDetail={status === "error" ? technicalDetail : ""}
+          diagnostic={status === "error" ? textOnlyDiagnostic : null}
+        />
+      ) : null}
+
+      {showProcessingProgress ? (
+        <ProcessingProgress
+          percentage={progress.percentage}
+          currentStep={progress.currentStep}
+          detailMessage={progress.detailMessage}
+          stage={progress.stage}
+          isIndeterminate={progress.isIndeterminate}
+          startedAt={processingStartedAt}
+          elapsedTime={status === "done" ? result?.durationMs : undefined}
+          debugStage={progress.debugStage}
+          showDebug={allowProfileTesting && accessMode === "master"}
+          showLongDocumentHint={isLargeOrExtendedDocument}
+        />
+      ) : null}
 
       {result && status === "done" && result.profileName ? (
         <div className="rounded-2xl border border-brand-border bg-brand-card px-4 py-3 text-center text-xs leading-5 text-brand-slate">
@@ -429,7 +550,6 @@ export function OcrWorkflow({
             disabled={
               !file ||
               status === "validating" ||
-              status === "error" ||
               status === "uploading" ||
               status === "processing"
             }
@@ -440,6 +560,8 @@ export function OcrWorkflow({
                 <Spinner />
                 {status === "uploading" ? "Subiendo..." : "Procesando..."}
               </>
+            ) : status === "error" ? (
+              "Reintentar"
             ) : (
               "Procesar documento"
             )}
@@ -467,6 +589,145 @@ export function OcrWorkflow({
       </div>
     </div>
   );
+}
+
+function getEstimatedOcrProgress({
+  elapsedMs,
+  isPdf,
+}: {
+  elapsedMs: number;
+  isPdf: boolean;
+}): ProcessingProgressState {
+  const elapsedSeconds = elapsedMs / 1000;
+
+  if (elapsedSeconds < 7) {
+    if (isPdf) {
+      const pdfSteps = [
+        {
+          currentStep: "Analizando páginas del PDF…",
+          debugStage: "preprocessing:start",
+          detailMessage: "Detectando si el PDF es digital o escaneado.",
+        },
+        {
+          currentStep: "Detectando orientación y calidad visual…",
+          debugStage: "orientation:selected",
+          detailMessage: "Estamos revisando rotación, nitidez y estructura de las páginas.",
+        },
+        {
+          currentStep: "Procesando páginas relevantes…",
+          debugStage: "preprocessing:start",
+          detailMessage: "Optimizando el PDF para mejorar la lectura.",
+        },
+      ];
+      const step = pdfSteps[Math.min(Math.floor(elapsedSeconds / 2.3), 2)];
+
+      return {
+        ...step,
+        isIndeterminate: true,
+        percentage: 60,
+        stage: "preprocessing",
+      };
+    }
+
+    const imageSteps = [
+      {
+        currentStep: "Analizando orientación de la imagen…",
+        debugStage: "preprocessing:start",
+        detailMessage: "Estamos revisando nitidez, contraste y encuadre.",
+      },
+      {
+        currentStep: "Probando rotaciones para mejorar la lectura…",
+        debugStage: "orientation:selected",
+        detailMessage: "Buscamos la orientación que permita recuperar más información.",
+      },
+      {
+        currentStep: "Seleccionando la versión más legible…",
+        debugStage: "orientation:selected",
+        detailMessage: "Optimizando la imagen antes de iniciar el OCR.",
+      },
+    ];
+    const step = imageSteps[Math.min(Math.floor(elapsedSeconds / 2.3), 2)];
+
+    return {
+      ...step,
+      isIndeterminate: true,
+      percentage: 60,
+      stage: "preprocessing",
+    };
+  }
+
+  if (elapsedSeconds < 18) {
+    return elapsedSeconds < 13
+      ? {
+          currentStep: "Procesando con motor OCR avanzado…",
+          debugStage: "document-ai:start",
+          detailMessage: "Recuperando texto y estructura visual del documento.",
+          isIndeterminate: true,
+          percentage: 75,
+          stage: "ocr",
+        }
+      : {
+          currentStep: "Recuperando texto del documento…",
+          debugStage: "document-ai:complete",
+          detailMessage: "Seguimos procesando según la calidad y extensión del archivo.",
+          isIndeterminate: true,
+          percentage: 75,
+          stage: "ocr",
+        };
+  }
+
+  const finalSteps = [
+    {
+      currentStep: "Clasificando información extraída…",
+      debugStage: "classifier:start",
+      detailMessage: "Identificando el tipo documental y la estructura más adecuada.",
+      stage: "structuring" as const,
+    },
+    {
+      currentStep: "Detectando tablas, columnas y patrones…",
+      debugStage: "classifier:complete",
+      detailMessage: "Buscando encabezados, filas y campos repetidos.",
+      stage: "structuring" as const,
+    },
+    {
+      currentStep: "Normalizando datos extraídos…",
+      debugStage: "structuring:start",
+      detailMessage: "Convirtiendo texto en columnas ordenadas y coherentes.",
+      stage: "structuring" as const,
+    },
+    {
+      currentStep: "Validando confiabilidad de los resultados…",
+      debugStage: "quality-gate:start",
+      detailMessage: "Revisando completitud de columnas, filas y campos clave.",
+      stage: "quality" as const,
+    },
+    {
+      currentStep: "Generando archivos de salida…",
+      debugStage: "output-generation:start",
+      detailMessage: "Preparando CSV y JSON para la descarga.",
+      stage: "output" as const,
+    },
+    {
+      currentStep: "Finalizando procesamiento…",
+      debugStage: "output-generation:start",
+      detailMessage:
+        "Seguimos procesando, esto puede demorar según la calidad y extensión del archivo.",
+      stage: "output" as const,
+    },
+  ];
+  const finalStepIndex = Math.floor((elapsedSeconds - 18) / 6) % finalSteps.length;
+
+  return {
+    ...finalSteps[finalStepIndex],
+    isIndeterminate: true,
+    percentage: 90,
+  };
+}
+
+function waitForProgressPaint() {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, 180);
+  });
 }
 
 function sanitizeBlobFileName(value: string) {
