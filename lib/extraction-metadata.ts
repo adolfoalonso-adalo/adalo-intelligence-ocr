@@ -24,10 +24,17 @@ export type ExtractionMetadataInput = {
   profileName?: string;
   providerUsed?: string;
   gptExtractorUsed?: boolean;
+  gptExtractorMode?: "multimodal" | "text_layout_only";
   gptReviewerUsed?: boolean;
+  gptReviewerMode?: "multimodal" | "text_layout_only";
   legacyProfilesBypassed?: boolean;
+  pdfVisualRenderingAttempted?: boolean;
+  pdfVisualRenderingSucceeded?: boolean;
   qualityStatus?: string;
   rejectedLegacyColumns?: string[];
+  usedDocumentAiTextOnlyFallback?: boolean;
+  visualPagesRendered?: boolean;
+  visualRenderError?: string;
   records: number;
   rowsExtracted?: number;
   visualStructuringProvider?: string;
@@ -60,10 +67,17 @@ export type ExtractionMetadata = {
   profileName?: string;
   providerUsed?: string;
   gptExtractorUsed?: boolean;
+  gptExtractorMode?: "multimodal" | "text_layout_only";
   gptReviewerUsed?: boolean;
+  gptReviewerMode?: "multimodal" | "text_layout_only";
   legacyProfilesBypassed?: boolean;
+  pdfVisualRenderingAttempted?: boolean;
+  pdfVisualRenderingSucceeded?: boolean;
   qualityStatus?: string;
   rejectedLegacyColumns?: string[];
+  usedDocumentAiTextOnlyFallback?: boolean;
+  visualPagesRendered?: boolean;
+  visualRenderError?: string;
   records: number;
   rowsExtracted?: number;
   visualStructuringProvider?: string;
@@ -96,10 +110,17 @@ export function createExtractionMetadata({
   profileName,
   providerUsed,
   gptExtractorUsed,
+  gptExtractorMode,
   gptReviewerUsed,
+  gptReviewerMode,
   legacyProfilesBypassed,
+  pdfVisualRenderingAttempted,
+  pdfVisualRenderingSucceeded,
   qualityStatus,
   rejectedLegacyColumns,
+  usedDocumentAiTextOnlyFallback,
+  visualPagesRendered,
+  visualRenderError,
   records,
   rowsExtracted,
   visualStructuringProvider,
@@ -131,10 +152,17 @@ export function createExtractionMetadata({
     profileName,
     providerUsed,
     gptExtractorUsed,
+    gptExtractorMode,
     gptReviewerUsed,
+    gptReviewerMode,
     legacyProfilesBypassed,
+    pdfVisualRenderingAttempted,
+    pdfVisualRenderingSucceeded,
     qualityStatus,
     rejectedLegacyColumns,
+    usedDocumentAiTextOnlyFallback,
+    visualPagesRendered,
+    visualRenderError,
     records,
     rowsExtracted,
     visualStructuringProvider,

@@ -18,6 +18,10 @@ En esta ruta no se ejecutan clasificadores, patrones ni columnas de perfiles int
 
 Los encabezados visibles tienen prioridad absoluta. Si GPT propone columnas legacy que no aparecen en el OCR del documento, la extraccion se rechaza en lugar de generar un CSV semanticamente incorrecto. Esto evita, por ejemplo, convertir una tabla de proveedores en columnas de movimiento de camiones.
 
+En Node/Vercel, `@napi-rs/canvas` aporta los polyfills `DOMMatrix`, `ImageData` y `Path2D` requeridos por `pdfjs-dist`. El render visual es complementario: si una pagina no puede renderizarse, la ruta universal continua en modo `text_layout_only` con el texto, layout y tablas recuperados por Document AI. El extractor y el revisor GPT reconstruyen la tabla sin imagen y el resultado debe superar el mismo quality gate antes de generar archivos.
+
+La metadata de extraccion informa `pdfVisualRenderingAttempted`, `pdfVisualRenderingSucceeded`, `visualPagesRendered`, `visualRenderError`, `usedDocumentAiTextOnlyFallback`, `gptExtractorMode` y `gptReviewerMode`. El error tecnico de render queda en logs y metadata; la UI recibe una advertencia breve sin exponer detalles internos.
+
 Variables:
 
 ```env

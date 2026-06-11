@@ -60,9 +60,16 @@ export type OrchestratedOCRResult = CsvAnalysisResult & {
   profileName?: string;
   providerUsed?: string;
   gptExtractorUsed?: boolean;
+  gptExtractorMode?: "multimodal" | "text_layout_only";
   gptReviewerUsed?: boolean;
+  gptReviewerMode?: "multimodal" | "text_layout_only";
   legacyProfilesBypassed?: boolean;
+  pdfVisualRenderingAttempted?: boolean;
+  pdfVisualRenderingSucceeded?: boolean;
   rejectedLegacyColumns?: string[];
+  usedDocumentAiTextOnlyFallback?: boolean;
+  visualPagesRendered?: boolean;
+  visualRenderError?: string;
   qualityStatus?: OCRQualityStatus;
   rowsExtracted?: number;
   allowedProfiles?: string[];
@@ -538,6 +545,15 @@ async function runDocumentAiGptOptimized(input: {
       detectedHeaders: result.initialDetectedHeaders,
       finalHeaders: result.detectedHeaders,
       rejectedLegacyColumns: result.rejectedLegacyColumns,
+      pdfVisualRenderingAttempted: result.pdfVisualRenderingAttempted,
+      pdfVisualRenderingSucceeded: result.pdfVisualRenderingSucceeded,
+      visualPagesRendered: result.visualPagesRendered,
+      visualRenderError: result.visualRenderError,
+      usedDocumentAiTextOnlyFallback:
+        result.usedDocumentAiTextOnlyFallback,
+      documentAiTextLength: source.rawTextContent.length,
+      gptExtractorMode: result.gptExtractorMode,
+      gptReviewerMode: result.gptReviewerMode,
       rowsExtracted: result.extractedRows,
       qualityScore: assessment.confidence,
     });
@@ -558,14 +574,22 @@ async function runDocumentAiGptOptimized(input: {
       extractionType: result.detectedDocumentType,
       fallbackProvider: "google-document-ai",
       gptExtractorUsed: true,
+      gptExtractorMode: result.gptExtractorMode,
       gptReviewerUsed: true,
+      gptReviewerMode: result.gptReviewerMode,
       legacyProfilesBypassed: true,
+      pdfVisualRenderingAttempted: result.pdfVisualRenderingAttempted,
+      pdfVisualRenderingSucceeded: result.pdfVisualRenderingSucceeded,
       pagesProcessed: source.pagesProcessed,
       primaryProvider: "google-document-ai",
       profileName: "Deteccion documental universal",
       providerUsed: "google-document-ai + openai",
       qualityStatus: assessment.qualityStatus,
       visualStructuringProvider: "openai",
+      usedDocumentAiTextOnlyFallback:
+        result.usedDocumentAiTextOnlyFallback,
+      visualPagesRendered: result.visualPagesRendered,
+      visualRenderError: result.visualRenderError,
       warnings: [
         ...(result.warnings ?? []),
         ...assessment.warnings,

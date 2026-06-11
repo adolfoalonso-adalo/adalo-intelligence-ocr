@@ -882,9 +882,16 @@ async function successResponse(
     documentTitle?: string;
     documentAiUsed?: boolean;
     gptExtractorUsed?: boolean;
+    gptExtractorMode?: "multimodal" | "text_layout_only";
     gptReviewerUsed?: boolean;
+    gptReviewerMode?: "multimodal" | "text_layout_only";
     legacyProfilesBypassed?: boolean;
+    pdfVisualRenderingAttempted?: boolean;
+    pdfVisualRenderingSucceeded?: boolean;
     rejectedLegacyColumns?: string[];
+    usedDocumentAiTextOnlyFallback?: boolean;
+    visualPagesRendered?: boolean;
+    visualRenderError?: string;
   },
   startedAt: number,
   rateLimit: RateLimitResult,
@@ -951,13 +958,21 @@ async function successResponse(
     fallbackProvider: result.fallbackProvider,
     providerUsed: result.providerUsed,
     gptExtractorUsed: result.gptExtractorUsed,
+    gptExtractorMode: result.gptExtractorMode,
     gptReviewerUsed: result.gptReviewerUsed,
+    gptReviewerMode: result.gptReviewerMode,
     legacyProfilesBypassed: result.legacyProfilesBypassed,
+    pdfVisualRenderingAttempted: result.pdfVisualRenderingAttempted,
+    pdfVisualRenderingSucceeded: result.pdfVisualRenderingSucceeded,
     confidence: result.confidence,
     qualityStatus: result.qualityStatus,
     pagesProcessed: result.pagesProcessed,
     rowsExtracted: result.rowsExtracted ?? result.extractedRows,
     rejectedLegacyColumns: result.rejectedLegacyColumns,
+    usedDocumentAiTextOnlyFallback:
+      result.usedDocumentAiTextOnlyFallback,
+    visualPagesRendered: result.visualPagesRendered,
+    visualRenderError: result.visualRenderError,
     visualStructuringProvider: result.visualStructuringProvider,
     warnings: [...(result.profileValidationWarnings ?? []), ...(result.warnings ?? [])],
   });
@@ -1008,9 +1023,17 @@ async function successResponse(
       documentTitle: result.documentTitle,
       documentAiUsed: result.documentAiUsed,
       gptExtractorUsed: result.gptExtractorUsed,
+      gptExtractorMode: result.gptExtractorMode,
       gptReviewerUsed: result.gptReviewerUsed,
+      gptReviewerMode: result.gptReviewerMode,
       legacyProfilesBypassed: result.legacyProfilesBypassed,
+      pdfVisualRenderingAttempted: result.pdfVisualRenderingAttempted,
+      pdfVisualRenderingSucceeded: result.pdfVisualRenderingSucceeded,
       rejectedLegacyColumns: result.rejectedLegacyColumns,
+      usedDocumentAiTextOnlyFallback:
+        result.usedDocumentAiTextOnlyFallback,
+      visualPagesRendered: result.visualPagesRendered,
+      visualRenderError: result.visualRenderError,
       resultQuality: result.resultQuality,
       providerUsed: result.providerUsed,
       visualStructuringProvider: result.visualStructuringProvider,

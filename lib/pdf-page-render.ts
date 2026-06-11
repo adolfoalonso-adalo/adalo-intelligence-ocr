@@ -42,6 +42,10 @@ export class PdfPageRenderError extends Error {
 }
 
 export async function getPdfPageCount(fileBuffer: Buffer) {
+  const { installPdfjsNodePolyfills } = await import(
+    "@/lib/pdfjs-node-polyfills"
+  );
+  await installPdfjsNodePolyfills();
   const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as PdfjsModule;
   const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(fileBuffer),

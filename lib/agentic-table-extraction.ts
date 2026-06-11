@@ -1,7 +1,8 @@
 import OpenAI from "openai";
 import {
-  createOpenAiVisualInputs,
+  prepareOpenAiVisualInputs,
   type OpenAiVisualStructuringInput,
+  type VisualInputPreparation,
   type VisualImageInput,
 } from "@/lib/openai-visual-structuring";
 import { recordsToCsv } from "@/lib/structured-output";
@@ -45,6 +46,13 @@ export type AgenticDocumentTableResult = CsvAnalysisResult & {
   initialDetectedHeaders: string[];
   providerConfidence: number;
   rejectedLegacyColumns: string[];
+  gptExtractorMode: "multimodal" | "text_layout_only";
+  gptReviewerMode: "multimodal" | "text_layout_only";
+  pdfVisualRenderingAttempted: boolean;
+  pdfVisualRenderingSucceeded: boolean;
+  usedDocumentAiTextOnlyFallback: boolean;
+  visualPagesRendered: boolean;
+  visualRenderError?: string;
 };
 
 export function isAgenticTableModeEnabled() {
@@ -62,27 +70,42 @@ export async function runAgenticDocumentTableExtraction(
     throw new Error(config.disabledReason);
   }
 
-  const images = await createOpenAiVisualInputs({
+  const visualPreparation = await prepareAgenticVisualContext({
     ...input,
     maxVisualPages: config.maxPages,
   });
-  if (images.length === 0) {
-    throw new Error("AGENTIC_TABLE_VISUAL_INPUT_UNAVAILABLE");
-  }
+  console.info("[OCR] agentic visual preparation", {
+    documentAiTextLength: input.rawTextContent.length,
+    gptExtractorMode: visualPreparation.mode,
+    gptReviewerMode: visualPreparation.mode,
+    pdfVisualRenderingAttempted: visualPreparation.attempted,
+    pdfVisualRenderingSucceeded: visualPreparation.succeeded,
+    usedDocumentAiTextOnlyFallback: !visualPreparation.succeeded,
+    visualPagesRendered: visualPreparation.images.length,
+    visualRenderError: visualPreparation.error,
+  });
+  const images = visualPreparation.images;
+  const agentInput = {
+    ...input,
+    agenticMode: visualPreparation.mode,
+    visualRenderError: visualPreparation.error,
+  };
 
   const client = new OpenAI({
     apiKey: config.apiKey,
     timeout: config.timeoutMs,
   });
-  const extracted = await runExtractorAgent(client, images, input, config);
+  const extracted = await runExtractorAgent(client, images, agentInput, config);
   const reviewed = await runReviewerAgent(
     client,
     images,
-    input,
+    agentInput,
     extracted,
     config,
   );
-  const quality = assessAgenticTableResult(reviewed);
+  const quality = assessAgenticTableResult(reviewed, {
+    visualPagesRendered: visualPreparation.succeeded,
+  });
   const rejectedLegacyColumns = findUnsupportedLegacyColumns(
     reviewed.finalHeaders,
     input.rawTextContent,
@@ -111,19 +134,45 @@ export async function runAgenticDocumentTableExtraction(
     jsonColumns: reviewed.finalHeaders,
     jsonRows: reviewed.finalRows,
     modelUsed: `${config.model} - agentic document table`,
-    pagesProcessed: images.length,
+    pagesProcessed: input.pagesProcessed ?? images.length,
     providerConfidence: reviewed.confidence,
     rejectedLegacyColumns,
-    resultQuality: reviewed.warnings.length > 0 ? "partial" : "ai",
+    gptExtractorMode: visualPreparation.mode,
+    gptReviewerMode: visualPreparation.mode,
+    pdfVisualRenderingAttempted: visualPreparation.attempted,
+    pdfVisualRenderingSucceeded: visualPreparation.succeeded,
+    resultQuality:
+      reviewed.warnings.length > 0 || !visualPreparation.succeeded
+        ? "partial"
+        : "ai",
     rowsExtracted: reviewed.finalRows.length,
-    warnings: reviewed.warnings,
+    usedDocumentAiTextOnlyFallback: !visualPreparation.succeeded,
+    visualPagesRendered: visualPreparation.succeeded,
+    visualRenderError: visualPreparation.error,
+    warnings: [
+      ...reviewed.warnings,
+      ...(visualPreparation.error
+        ? [
+            "La tabla se reconstruyo con texto y layout de Document AI porque no hubo paginas visuales disponibles.",
+          ]
+        : []),
+    ],
   };
+}
+
+export async function prepareAgenticVisualContext(
+  input: OpenAiVisualStructuringInput,
+  createInputs?: (
+    value: OpenAiVisualStructuringInput,
+  ) => Promise<VisualImageInput[]>,
+) {
+  return prepareOpenAiVisualInputs(input, createInputs);
 }
 
 async function runExtractorAgent(
   client: OpenAI,
   images: VisualImageInput[],
-  input: OpenAiVisualStructuringInput & { profileHint?: string },
+  input: AgenticPromptInput,
   config: ReturnType<typeof getAgenticConfig> & { enabled: true },
 ) {
   const response = await client.responses.create({
@@ -153,7 +202,7 @@ async function runExtractorAgent(
 async function runReviewerAgent(
   client: OpenAI,
   images: VisualImageInput[],
-  input: OpenAiVisualStructuringInput,
+  input: AgenticPromptInput,
   extracted: AgenticExtractorOutput,
   config: ReturnType<typeof getAgenticConfig> & { enabled: true },
 ) {
@@ -217,13 +266,19 @@ export function parseAgenticReviewerResponse(
   };
 }
 
-export function assessAgenticTableResult(result: AgenticReviewerOutput) {
+export function assessAgenticTableResult(
+  result: AgenticReviewerOutput,
+  context: { visualPagesRendered?: boolean } = {},
+) {
   const normalizedHeaders = result.finalHeaders.map(normalizeKey);
   const genericLineOutput = ["pagina", "linea", "texto"].every((header) =>
     normalizedHeaders.includes(header),
   );
   const populatedRows = result.finalRows.filter((row) =>
     result.finalHeaders.some((header) => normalizeText(row[header])),
+  );
+  const supplierHeadersDetected = hasSupplierDocumentHeaders(
+    result.finalHeaders,
   );
 
   if (result.finalHeaders.length < 2) {
@@ -235,11 +290,36 @@ export function assessAgenticTableResult(result: AgenticReviewerOutput) {
   if (populatedRows.length === 0) {
     return { acceptable: false, reason: "No populated rows" };
   }
+  if (
+    !context.visualPagesRendered &&
+    supplierHeadersDetected &&
+    populatedRows.length >= 5
+  ) {
+    return {
+      acceptable: true,
+      reason: "Supplier table reconstructed from Document AI text/layout",
+    };
+  }
   if (result.confidence < 0.65) {
     return { acceptable: false, reason: "Reviewer confidence below 0.65" };
   }
 
   return { acceptable: true, reason: "Reviewed document headers and rows" };
+}
+
+export function hasSupplierDocumentHeaders(headers: string[]) {
+  const expected = [
+    "nombreempresa",
+    "proveedor",
+    "cuit",
+    "servicioarea",
+    "provincia",
+    "zonaderadicacion",
+    "fechaperiododecontratacion",
+    "modalidaddecontratacion",
+  ];
+  const actual = new Set(headers.map(normalizeKey));
+  return expected.every((header) => actual.has(header));
 }
 
 export function assertVisibleHeadersTakePriority(input: {
@@ -273,13 +353,21 @@ export function findUnsupportedLegacyColumns(
   });
 }
 
-function createExtractorPrompt(
-  input: OpenAiVisualStructuringInput & { profileHint?: string },
-) {
+type AgenticPromptInput = OpenAiVisualStructuringInput & {
+  agenticMode: VisualInputPreparation["mode"];
+  profileHint?: string;
+  visualRenderError?: string;
+};
+
+function createExtractorPrompt(input: AgenticPromptInput) {
   const rawText = input.rawTextContent.slice(0, 30000);
   const hint = input.profileHint
     ? `Contexto legacy opcional y no vinculante: ${input.profileHint}. Ignoralo si no coincide con los encabezados visibles.`
     : "No hay perfiles documentales ni columnas predefinidas.";
+  const renderingGuidance =
+    input.agenticMode === "text_layout_only"
+      ? `No hay imagen renderizada disponible. Reconstrui la tabla usando exclusivamente el texto OCR, lineas, bloques y senales de layout de Document AI. Detecta encabezados reales del documento. No uses perfiles ni columnas predefinidas.`
+      : "Usa las imagenes renderizadas y el texto/layout de Document AI en conjunto.";
 
   return `Sos el agente extractor universal de ADALO OCR.
 
@@ -288,6 +376,7 @@ Analiza visualmente el documento y el texto OCR de apoyo. Detecta el tipo real, 
 Archivo: ${input.fileName}
 Tipo MIME: ${input.mimeType}
 Paginas preparadas: ${input.pagesProcessed ?? "desconocido"}
+Modo del extractor: ${input.agenticMode}
 
 Reglas criticas:
 - Los encabezados visibles tienen prioridad absoluta.
@@ -301,6 +390,7 @@ Reglas criticas:
 - Devuelve exclusivamente el JSON solicitado.
 
 ${hint}
+${renderingGuidance}
 
 Texto OCR de apoyo:
 <ocr_text>
@@ -309,7 +399,7 @@ ${rawText}
 }
 
 function createReviewerPrompt(
-  input: OpenAiVisualStructuringInput,
+  input: AgenticPromptInput,
   extracted: AgenticExtractorOutput,
 ) {
   return `Sos el agente revisor de ADALO OCR.
@@ -325,6 +415,9 @@ Reglas:
 - Conserva una fila por registro real.
 - Elimina marcas CamScanner, sellos, folios y encabezados repetidos como filas.
 - Devuelve exclusivamente JSON valido.
+
+Modo del revisor: ${input.agenticMode}.
+${input.agenticMode === "text_layout_only" ? "No hay imagen disponible. Revisa usando la salida del extractor y las senales de texto/layout de Document AI." : "Compara tambien contra las imagenes renderizadas."}
 
 Propuesta del extractor:
 ${JSON.stringify(extracted).slice(0, 50000)}

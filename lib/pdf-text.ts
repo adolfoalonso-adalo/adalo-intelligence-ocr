@@ -79,6 +79,10 @@ export async function extractPdfTextByPages(
   fileBuffer: Buffer,
 ): Promise<PdfTextExtractionResult> {
   const failures: Array<{ parser: string; error: unknown }> = [];
+  const { installPdfjsNodePolyfills } = await import(
+    "@/lib/pdfjs-node-polyfills"
+  );
+  await installPdfjsNodePolyfills();
 
   try {
     const result = normalizeExtractionResult(
@@ -185,6 +189,10 @@ async function extractWithLegacyPdfParse(
 }
 
 async function extractWithPdfjsDist(fileBuffer: Buffer): Promise<{ pages: PdfTextPage[] }> {
+  const { installPdfjsNodePolyfills } = await import(
+    "@/lib/pdfjs-node-polyfills"
+  );
+  await installPdfjsNodePolyfills();
   const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as PdfjsModule;
 
   const loadingTask = pdfjs.getDocument({

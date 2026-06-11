@@ -87,6 +87,14 @@ export type VisualImageInput = {
   type: "input_image";
 };
 
+export type VisualInputPreparation = {
+  attempted: boolean;
+  error?: string;
+  images: VisualImageInput[];
+  mode: "multimodal" | "text_layout_only";
+  succeeded: boolean;
+};
+
 export type OpenAiVisualStructuringInput = {
   documentType: DocumentType;
   fileBuffer: Buffer;
@@ -405,6 +413,42 @@ export async function createOpenAiVisualInputs(
   }
 
   return images;
+}
+
+export async function prepareOpenAiVisualInputs(
+  input: OpenAiVisualStructuringInput,
+  createInputs: (
+    value: OpenAiVisualStructuringInput,
+  ) => Promise<VisualImageInput[]> = createOpenAiVisualInputs,
+): Promise<VisualInputPreparation> {
+  const attempted =
+    input.mimeType === "application/pdf" ||
+    input.mimeType === "image/jpeg" ||
+    input.mimeType === "image/png";
+
+  try {
+    const images = await createInputs(input);
+    return {
+      attempted,
+      images,
+      mode: images.length > 0 ? "multimodal" : "text_layout_only",
+      succeeded: images.length > 0,
+    };
+  } catch (error) {
+    return {
+      attempted,
+      error: sanitizeVisualRenderError(error),
+      images: [],
+      mode: "text_layout_only",
+      succeeded: false,
+    };
+  }
+}
+
+function sanitizeVisualRenderError(error: unknown) {
+  return error instanceof Error
+    ? error.message.replace(/\s+/g, " ").slice(0, 220)
+    : String(error ?? "Unknown PDF rendering error").slice(0, 220);
 }
 
 function createVisualStructuringPrompt(input: {
