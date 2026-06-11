@@ -7,6 +7,7 @@ import {
 } from "@/lib/openai-visual-structuring";
 import { recordsToCsv } from "@/lib/structured-output";
 import type { CsvAnalysisResult } from "@/lib/google-ai";
+import { normalizeDocumentTableFromTextLayout } from "@/lib/document-table-recovery";
 
 const MOVEMENT_COLUMNS = new Set([
   "fechasalida",
@@ -103,11 +104,49 @@ export async function runAgenticDocumentTableExtraction(
     extracted,
     config,
   );
-  const quality = assessAgenticTableResult(reviewed, {
+  let finalReviewed = reviewed;
+  let quality = assessAgenticTableResult(finalReviewed, {
     visualPagesRendered: visualPreparation.succeeded,
   });
+  let recoveredWithWarnings = false;
+
+  if (!quality.acceptable) {
+    const recovery = normalizeDocumentTableFromTextLayout({
+      extractedHeaders: extracted.detectedHeaders,
+      extractedRows: extracted.rows,
+      rawTextContent: input.rawTextContent,
+      reviewerConfidence: reviewed.confidence,
+      reviewedHeaders: reviewed.finalHeaders,
+      reviewedRows: reviewed.finalRows,
+    });
+
+    if (recovery) {
+      recoveredWithWarnings = true;
+      finalReviewed = {
+        confidence: recovery.confidence,
+        correctionsApplied: [
+          ...reviewed.correctionsApplied,
+          `Recuperacion post-review aplicada desde ${recovery.source}.`,
+        ],
+        finalDocumentType: "Tabla de proveedores",
+        finalHeaders: recovery.detectedHeaders,
+        finalRows: recovery.rows,
+        warnings: [...reviewed.warnings, ...recovery.warnings],
+      };
+      quality = {
+        acceptable: true,
+        reason: "Supplier table recovered from Document AI text/layout",
+      };
+      console.info("[OCR] agentic table recovered after review", {
+        confidence: finalReviewed.confidence,
+        headers: finalReviewed.finalHeaders.length,
+        rows: finalReviewed.finalRows.length,
+        source: recovery.source,
+      });
+    }
+  }
   const rejectedLegacyColumns = findUnsupportedLegacyColumns(
-    reviewed.finalHeaders,
+    finalReviewed.finalHeaders,
     input.rawTextContent,
   );
 
@@ -122,35 +161,40 @@ export async function runAgenticDocumentTableExtraction(
 
   return {
     automaticReviewApplied: true,
-    correctionsApplied: reviewed.correctionsApplied,
-    csvContent: recordsToCsv(reviewed.finalHeaders, reviewed.finalRows),
-    detectedDocumentType: reviewed.finalDocumentType,
-    detectedHeaders: reviewed.finalHeaders,
+    correctionsApplied: finalReviewed.correctionsApplied,
+    csvContent: recordsToCsv(finalReviewed.finalHeaders, finalReviewed.finalRows),
+    detectedDocumentType: finalReviewed.finalDocumentType,
+    detectedHeaders: finalReviewed.finalHeaders,
     documentTitle: extracted.documentTitle || undefined,
-    extractedRows: reviewed.finalRows.length,
+    extractedRows: finalReviewed.finalRows.length,
     extractionMode: UNIVERSAL_EXTRACTION_MODE,
     fileName: "ADALO_OCR_TABLA_DOCUMENTAL.csv",
     initialDetectedHeaders: extracted.detectedHeaders,
-    jsonColumns: reviewed.finalHeaders,
-    jsonRows: reviewed.finalRows,
+    jsonColumns: finalReviewed.finalHeaders,
+    jsonRows: finalReviewed.finalRows,
     modelUsed: `${config.model} - agentic document table`,
     pagesProcessed: input.pagesProcessed ?? images.length,
-    providerConfidence: reviewed.confidence,
+    providerConfidence: finalReviewed.confidence,
+    qualityStatus: recoveredWithWarnings
+      ? "accepted_with_warnings"
+      : undefined,
     rejectedLegacyColumns,
     gptExtractorMode: visualPreparation.mode,
     gptReviewerMode: visualPreparation.mode,
     pdfVisualRenderingAttempted: visualPreparation.attempted,
     pdfVisualRenderingSucceeded: visualPreparation.succeeded,
     resultQuality:
-      reviewed.warnings.length > 0 || !visualPreparation.succeeded
+      finalReviewed.warnings.length > 0 ||
+      recoveredWithWarnings ||
+      !visualPreparation.succeeded
         ? "partial"
         : "ai",
-    rowsExtracted: reviewed.finalRows.length,
+    rowsExtracted: finalReviewed.finalRows.length,
     usedDocumentAiTextOnlyFallback: !visualPreparation.succeeded,
     visualPagesRendered: visualPreparation.succeeded,
     visualRenderError: visualPreparation.error,
     warnings: [
-      ...reviewed.warnings,
+      ...finalReviewed.warnings,
       ...(visualPreparation.error
         ? [
             "La tabla se reconstruyo con texto y layout de Document AI porque no hubo paginas visuales disponibles.",

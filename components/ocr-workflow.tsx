@@ -173,6 +173,7 @@ export function OcrWorkflow({
     extractionMode?: string;
     extractionType?: string;
     resultQuality?: ResultQuality;
+    qualityStatus?: string;
     durationMs?: number;
     personnelQualityMetrics?: PersonnelQualityMetrics;
     companyPersonnelQualityMetrics?: CompanyPersonnelQualityMetrics;
@@ -424,6 +425,7 @@ export function OcrWorkflow({
         extractionMode: data.extractionMode,
         extractionType: data.extractionType,
         resultQuality: data.resultQuality,
+        qualityStatus: data.qualityStatus,
         durationMs: data.durationMs,
         personnelQualityMetrics: data.personnelQualityMetrics,
         companyPersonnelQualityMetrics:
@@ -443,11 +445,16 @@ export function OcrWorkflow({
         restrictionMode: data.restrictionMode,
         restrictionReason: data.restrictionReason,
       });
+      const completedWithWarnings =
+        data.qualityStatus === "accepted_with_warnings";
       setProgress({
-        currentStep: "Procesamiento completado",
+        currentStep: completedWithWarnings
+          ? "Procesamiento completado con advertencias"
+          : "Procesamiento completado",
         debugStage: "cleanup:complete",
-        detailMessage:
-          "Los datos fueron estructurados correctamente y ya podés descargar los resultados.",
+        detailMessage: completedWithWarnings
+          ? "Se reconstruyó una tabla utilizable, pero algunas filas podrían requerir revisión manual."
+          : "Los datos fueron estructurados correctamente y ya podés descargar los resultados.",
         isIndeterminate: false,
         percentage: 100,
         stage: "completed",
@@ -530,6 +537,7 @@ export function OcrWorkflow({
                 : error
           }
           resultQuality={status === "done" ? result?.resultQuality : undefined}
+          qualityStatus={status === "done" ? result?.qualityStatus : undefined}
           technicalDetail={status === "error" ? technicalDetail : ""}
           diagnostic={status === "error" ? textOnlyDiagnostic : null}
         />

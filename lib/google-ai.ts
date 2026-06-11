@@ -45,6 +45,7 @@ export type CsvAnalysisResult = {
   pagesProcessed?: number;
   orientationSelected?: 0 | 90 | 180 | 270;
   providerConfidence?: number;
+  qualityStatus?: string;
   rowsExtracted?: number;
   visualStructuringProvider?: string;
   warnings?: string[];

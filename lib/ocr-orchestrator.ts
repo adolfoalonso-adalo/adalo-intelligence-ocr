@@ -590,10 +590,9 @@ async function runDocumentAiGptOptimized(input: {
         result.usedDocumentAiTextOnlyFallback,
       visualPagesRendered: result.visualPagesRendered,
       visualRenderError: result.visualRenderError,
-      warnings: [
-        ...(result.warnings ?? []),
-        ...assessment.warnings,
-      ],
+      warnings: Array.from(
+        new Set([...(result.warnings ?? []), ...assessment.warnings]),
+      ),
     };
   } catch (error) {
     if (error instanceof OCRTextOnlyError) {

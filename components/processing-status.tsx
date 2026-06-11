@@ -20,6 +20,7 @@ type ProcessingStatusProps = {
   status: OcrStatus;
   details?: string;
   resultQuality?: ResultQuality;
+  qualityStatus?: string;
   technicalDetail?: string;
   diagnostic?: OcrTextOnlyDiagnostic | null;
 };
@@ -28,6 +29,7 @@ export function ProcessingStatus({
   status,
   details,
   resultQuality,
+  qualityStatus,
   technicalDetail,
   diagnostic,
 }: ProcessingStatusProps) {
@@ -35,7 +37,9 @@ export function ProcessingStatus({
   const isDone = status === "done";
   const isBusy =
     status === "validating" || status === "uploading" || status === "processing";
-  const title = isError ? getErrorTitle(details) : getStatusTitle(status, details, resultQuality);
+  const title = isError
+    ? getErrorTitle(details)
+    : getStatusTitle(status, details, resultQuality, qualityStatus);
   const description = isError ? getErrorDescription(details) : details;
 
   return (
@@ -152,7 +156,16 @@ function OcrDiagnosticDetails({
   );
 }
 
-function getStatusTitle(status: OcrStatus, details?: string, resultQuality?: ResultQuality) {
+function getStatusTitle(
+  status: OcrStatus,
+  details?: string,
+  resultQuality?: ResultQuality,
+  qualityStatus?: string,
+) {
+  if (status === "done" && qualityStatus === "accepted_with_warnings") {
+    return "Procesamiento completado con advertencias";
+  }
+
   if (status === "done" && resultQuality === "partial") {
     return "Procesamiento completado parcialmente";
   }

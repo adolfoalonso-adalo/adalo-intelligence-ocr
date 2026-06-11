@@ -311,4 +311,47 @@ assert.equal(
 );
 assert.ok(companyPersonnelGate.confidence >= 0.6);
 
+const recoveredSupplierColumns = [
+  "Nombre empresa",
+  "Proveedor",
+  "CUIT",
+  "Servicio/Área",
+  "Provincia",
+  "Zona de radicación",
+  "Fecha/Periodo de contratación",
+  "Modalidad de contratación",
+];
+const recoveredSupplierRows = Array.from({ length: 5 }, (_, index) => [
+  `Empresa ${index + 1}`,
+  `Proveedor ${index + 1}`,
+  `20-3803622${index}-${index}`,
+  "Transporte",
+  "Salta",
+  "Salar de Pocitos",
+  "01.12.25",
+  "Periodica",
+]);
+const recoveredSupplierGate = assessOCRQuality({
+  csvContent: [
+    recoveredSupplierColumns.map((value) => `"${value}"`).join(","),
+    ...recoveredSupplierRows.map((row) =>
+      row.map((value) => `"${value}"`).join(","),
+    ),
+  ].join("\n"),
+  extractedRows: recoveredSupplierRows.length,
+  fileName: "ADALO_OCR_PROVEEDORES.csv",
+  modelUsed: "google-document-ai + openai",
+  providerConfidence: 0.65,
+  qualityStatus: "accepted_with_warnings",
+  resultQuality: "partial",
+  warnings: ["Tabla reconstruida desde texto/layout."],
+});
+
+assert.equal(recoveredSupplierGate.acceptable, true);
+assert.equal(
+  recoveredSupplierGate.qualityStatus,
+  "accepted_with_warnings",
+);
+assert.equal(recoveredSupplierGate.confidence, 0.65);
+
 console.log("quality-assessment tests passed");

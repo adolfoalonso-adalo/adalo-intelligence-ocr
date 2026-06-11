@@ -21,6 +21,7 @@ import { assessExtractionQuality } from "@/lib/structured-output";
 export type OCRQualityStatus =
   | "completed"
   | "completed_with_warnings"
+  | "accepted_with_warnings"
   | "failed_quality_gate"
   | "fallback_required"
   | "manual_review_required";
@@ -48,6 +49,7 @@ export function assessOCRQuality(
   const warnings = [
     ...(preprocessing?.warnings ?? []),
     ...(result.profileValidationWarnings ?? []),
+    ...(result.warnings ?? []),
   ].filter(Boolean);
   const confidence = estimateConfidence(result, columns, rows, profile);
   const minConfidence = readNumber(process.env.OCR_MIN_CONFIDENCE, 0.75);
@@ -100,6 +102,21 @@ export function assessOCRQuality(
       reason: "No rows or columns were extracted",
       warnings,
     });
+  }
+
+  if (
+    result.qualityStatus === "accepted_with_warnings" &&
+    structuredQuality.quality !== "low"
+  ) {
+    return {
+      acceptable: true,
+      confidence: Math.max(confidence, 0.65),
+      qualityStatus: "accepted_with_warnings",
+      reason: "Structured table recovered from Document AI text/layout",
+      requiresManualReview: false,
+      shouldFallback: false,
+      warnings,
+    };
   }
 
   if (confidence < minConfidence) {
