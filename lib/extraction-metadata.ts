@@ -6,6 +6,7 @@ export type ExtractionMetadataInput = {
   correctionsApplied?: string[];
   detectedHeaders?: string[];
   documentType?: string;
+  documentAiUsed?: boolean;
   durationMs?: number;
   extractionKind: string;
   extractionMode?: string;
@@ -22,7 +23,11 @@ export type ExtractionMetadataInput = {
   profileCode?: string;
   profileName?: string;
   providerUsed?: string;
+  gptExtractorUsed?: boolean;
+  gptReviewerUsed?: boolean;
+  legacyProfilesBypassed?: boolean;
   qualityStatus?: string;
+  rejectedLegacyColumns?: string[];
   records: number;
   rowsExtracted?: number;
   visualStructuringProvider?: string;
@@ -37,6 +42,7 @@ export type ExtractionMetadata = {
   correctionsApplied?: string[];
   detectedHeaders?: string[];
   documentType?: string;
+  documentAiUsed?: boolean;
   durationMs?: number;
   extractionKind: string;
   extractionMode?: string;
@@ -53,7 +59,11 @@ export type ExtractionMetadata = {
   profileCode?: string;
   profileName?: string;
   providerUsed?: string;
+  gptExtractorUsed?: boolean;
+  gptReviewerUsed?: boolean;
+  legacyProfilesBypassed?: boolean;
   qualityStatus?: string;
+  rejectedLegacyColumns?: string[];
   records: number;
   rowsExtracted?: number;
   visualStructuringProvider?: string;
@@ -67,6 +77,7 @@ export function createExtractionMetadata({
   confidence,
   correctionsApplied,
   detectedHeaders,
+  documentAiUsed,
   documentType,
   durationMs,
   extractionKind,
@@ -84,7 +95,11 @@ export function createExtractionMetadata({
   profileCode,
   profileName,
   providerUsed,
+  gptExtractorUsed,
+  gptReviewerUsed,
+  legacyProfilesBypassed,
   qualityStatus,
+  rejectedLegacyColumns,
   records,
   rowsExtracted,
   visualStructuringProvider,
@@ -97,6 +112,7 @@ export function createExtractionMetadata({
     confidence,
     correctionsApplied,
     detectedHeaders,
+    documentAiUsed,
     documentType,
     durationMs,
     extractionKind,
@@ -114,7 +130,11 @@ export function createExtractionMetadata({
     profileCode,
     profileName,
     providerUsed,
+    gptExtractorUsed,
+    gptReviewerUsed,
+    legacyProfilesBypassed,
     qualityStatus,
+    rejectedLegacyColumns,
     records,
     rowsExtracted,
     visualStructuringProvider,

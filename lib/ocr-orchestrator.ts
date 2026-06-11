@@ -21,6 +21,7 @@ import {
 } from "@/lib/ocr-quality";
 import {
   createOCRProvider,
+  extractGoogleDocumentAiSource,
   normalizeProviderName,
   type OCRProviderName,
   type OCRProviderResult,
@@ -49,6 +50,8 @@ export type OrchestratedOCRResult = CsvAnalysisResult & {
   detectedDocumentType?: string;
   detectedHeaders?: string[];
   documentTitle?: string;
+  initialDetectedHeaders?: string[];
+  documentAiUsed?: boolean;
   extractionType?: string;
   fallbackProvider?: OCRProviderName;
   pagesProcessed?: number;
@@ -56,6 +59,10 @@ export type OrchestratedOCRResult = CsvAnalysisResult & {
   profileCode?: string;
   profileName?: string;
   providerUsed?: string;
+  gptExtractorUsed?: boolean;
+  gptReviewerUsed?: boolean;
+  legacyProfilesBypassed?: boolean;
+  rejectedLegacyColumns?: string[];
   qualityStatus?: OCRQualityStatus;
   rowsExtracted?: number;
   allowedProfiles?: string[];
@@ -89,8 +96,24 @@ export async function runOcrExtraction(input: {
     fileBuffer: input.fileBuffer,
     fileName: input.fileName,
     mimeType: input.mimeType,
-    profile: input.clientProfile,
+    profile:
+      input.profileRestriction?.mode === "forced_profile"
+        ? input.clientProfile
+        : undefined,
   });
+
+  if (
+    isAgenticTableModeEnabled() &&
+    input.profileRestriction?.mode !== "forced_profile"
+  ) {
+    return runDocumentAiGptOptimized({
+      fileBuffer: input.fileBuffer,
+      fileName: input.fileName,
+      mimeType: input.mimeType,
+      preprocessing,
+    });
+  }
+
   const preliminaryRestriction =
     input.profileRestriction?.mode === "forced_profile"
       ? input.profileRestriction
@@ -143,105 +166,6 @@ export async function runOcrExtraction(input: {
     pagesProcessed: preprocessing.pagesProcessed,
     hasTableSignals: preprocessing.hasTableSignals,
   });
-
-  if (
-    isAgenticTableModeEnabled() &&
-    input.profileRestriction?.mode !== "forced_profile"
-  ) {
-    console.info("[OCR] agentic document table selected", {
-      fileName: input.fileName,
-      mimeType: input.mimeType,
-      profileHint: getClientProfileCode(internalProfile),
-      restrictionMode: input.profileRestriction?.mode ?? "automatic",
-    });
-
-    try {
-      const agenticResult = await runAgenticDocumentTableExtraction({
-        documentType: input.documentType,
-        fileBuffer: input.fileBuffer,
-        fileName: input.fileName,
-        mimeType: input.mimeType,
-        pagesProcessed: preprocessing.pagesProcessed,
-        preprocessing,
-        profile: internalProfile,
-        profileHint:
-          internalProfile.id === "internal-general"
-            ? undefined
-            : internalProfile.userFacingExtractionType ?? internalProfile.label,
-        rawTextContent: preprocessing.extractedText ?? "",
-      });
-      const agenticClassification = classifyInternalOCRProfile({
-        fileName: input.fileName,
-        hasTableSignals: agenticResult.detectedHeaders.length > 1,
-        restriction: input.profileRestriction,
-        text: [
-          preprocessing.extractedText ?? "",
-          agenticResult.detectedDocumentType,
-          ...agenticResult.detectedHeaders,
-        ].join("\n"),
-      });
-      const agenticProfile = agenticClassification.profile;
-      const agenticAssessment = assessOCRQuality(
-        agenticResult,
-        agenticProfile,
-        preprocessing,
-      );
-      const restrictionDecision = applyProfileRestriction(
-        agenticProfile,
-        input.profileRestriction,
-      );
-
-      logProfileRestrictionDecision(restrictionDecision);
-      logOCRQualityAssessment({
-        assessment: agenticAssessment,
-        profile: agenticProfile,
-        providerUsed: "openai-agentic",
-        rowsExtracted: agenticResult.extractedRows,
-      });
-
-      if (agenticAssessment.acceptable) {
-        return withRestrictionMetadata(
-          {
-            ...agenticResult,
-            confidence: agenticAssessment.confidence,
-            extractionType: agenticResult.detectedDocumentType,
-            fallbackProvider: fallbackProvider.name,
-            primaryProvider: primaryProvider.name,
-            profileCode: agenticProfile.id,
-            profileName: agenticProfile.label,
-            providerUsed: "openai-agentic",
-            qualityStatus: agenticAssessment.qualityStatus,
-            warnings: [
-              ...(agenticResult.warnings ?? []),
-              ...agenticAssessment.warnings,
-            ],
-          },
-          restrictionDecision,
-        );
-      }
-
-      console.warn("[OCR] agentic document table did not pass quality", {
-        confidence: agenticAssessment.confidence,
-        fileName: input.fileName,
-        reason: agenticAssessment.reason,
-        rowsExtracted: agenticResult.extractedRows,
-      });
-    } catch (agenticError) {
-      if (agenticError instanceof OCRProfileRestrictionError) {
-        throw agenticError;
-      }
-
-      console.warn("[OCR] agentic document table unavailable; continuing legacy flow", {
-        errorName:
-          agenticError instanceof Error ? agenticError.name : typeof agenticError,
-        fileName: input.fileName,
-        reason:
-          agenticError instanceof Error
-            ? sanitizeLogText(agenticError.message).slice(0, 180)
-            : "Unknown agentic extraction error",
-      });
-    }
-  }
 
   if (
     shouldPreferAdvancedProvider({
@@ -561,6 +485,159 @@ export async function runOcrExtraction(input: {
       : "La extraccion no alcanzo la calidad minima requerida.",
     `OCR_QUALITY_GATE_FAILED: ${primaryAssessment.reason}`,
   );
+}
+
+async function runDocumentAiGptOptimized(input: {
+  fileBuffer: Buffer;
+  fileName: string;
+  mimeType: string;
+  preprocessing: Awaited<ReturnType<typeof analyzeDocumentForOcr>>;
+}): Promise<OrchestratedOCRResult> {
+  console.info("[OCR] universal extraction selected", {
+    extractionMode: "document_ai_gpt_optimized",
+    fileName: input.fileName,
+    mimeType: input.mimeType,
+    documentAiUsed: true,
+    gptExtractorUsed: true,
+    gptReviewerUsed: true,
+    legacyProfilesBypassed: true,
+  });
+
+  const source = await extractGoogleDocumentAiSource({
+    fileBuffer: input.fileBuffer,
+    mimeType: input.mimeType,
+  });
+  const rawTextContent = [source.tablesText, source.rawTextContent]
+    .filter(Boolean)
+    .join("\n\n");
+
+  try {
+    const result = await runAgenticDocumentTableExtraction({
+      documentType: "auto",
+      fileBuffer: input.fileBuffer,
+      fileName: input.fileName,
+      mimeType: input.mimeType,
+      pagesProcessed: source.pagesProcessed,
+      preprocessing: input.preprocessing,
+      rawTextContent,
+    });
+    const assessment = assessOCRQuality(result, undefined, input.preprocessing);
+
+    logOCRQualityAssessment({
+      assessment,
+      providerUsed: "google-document-ai + openai",
+      rowsExtracted: result.extractedRows,
+    });
+
+    console.info("[OCR] universal extraction reviewed", {
+      extractionMode: "document_ai_gpt_optimized",
+      documentAiUsed: true,
+      gptExtractorUsed: true,
+      gptReviewerUsed: true,
+      legacyProfilesBypassed: true,
+      detectedHeaders: result.initialDetectedHeaders,
+      finalHeaders: result.detectedHeaders,
+      rejectedLegacyColumns: result.rejectedLegacyColumns,
+      rowsExtracted: result.extractedRows,
+      qualityScore: assessment.confidence,
+    });
+
+    if (!assessment.acceptable) {
+      throw createUniversalTextOnlyError({
+        assessment,
+        rawTextContent: source.rawTextContent,
+        source,
+      });
+    }
+
+    return {
+      ...result,
+      confidence: assessment.confidence,
+      documentAiUsed: true,
+      extractionMode: "document_ai_gpt_optimized",
+      extractionType: result.detectedDocumentType,
+      fallbackProvider: "google-document-ai",
+      gptExtractorUsed: true,
+      gptReviewerUsed: true,
+      legacyProfilesBypassed: true,
+      pagesProcessed: source.pagesProcessed,
+      primaryProvider: "google-document-ai",
+      profileName: "Deteccion documental universal",
+      providerUsed: "google-document-ai + openai",
+      qualityStatus: assessment.qualityStatus,
+      visualStructuringProvider: "openai",
+      warnings: [
+        ...(result.warnings ?? []),
+        ...assessment.warnings,
+      ],
+    };
+  } catch (error) {
+    if (error instanceof OCRTextOnlyError) {
+      throw error;
+    }
+
+    console.warn("[OCR] universal extraction failed quality", {
+      extractionMode: "document_ai_gpt_optimized",
+      documentAiUsed: true,
+      gptExtractorUsed: true,
+      gptReviewerUsed: true,
+      legacyProfilesBypassed: true,
+      errorName: error instanceof Error ? error.name : typeof error,
+      reason:
+        error instanceof Error
+          ? sanitizeLogText(error.message).slice(0, 180)
+          : "Unknown universal extraction error",
+    });
+
+    throw new OCRTextOnlyError({
+      canDownloadRawText: true,
+      documentAiDetectedTables: source.documentAiDetectedTables,
+      extractionMode: "ocr_text_only",
+      fallbackUsed: false,
+      multimodalFallbackAttempted: true,
+      orientationSelected: source.orientationSelected,
+      pagesProcessed: source.pagesProcessed,
+      profileUsed: "universal-document",
+      providerUsed: "google-document-ai",
+      qualityScore: 0,
+      qualityStatus: "failed_quality_gate",
+      rawTextContent: source.rawTextContent,
+      reason:
+        error instanceof Error
+          ? sanitizeLogText(error.message).slice(0, 240)
+          : "La revision universal no pudo completar una tabla confiable.",
+      textLength: source.rawTextContent.length,
+      visualStructuringProvider: "openai",
+      warnings: [
+        "Document AI recupero el documento, pero GPT no pudo validar una estructura confiable.",
+      ],
+    });
+  }
+}
+
+function createUniversalTextOnlyError(input: {
+  assessment: OCRQualityAssessment;
+  rawTextContent: string;
+  source: Awaited<ReturnType<typeof extractGoogleDocumentAiSource>>;
+}) {
+  return new OCRTextOnlyError({
+    canDownloadRawText: true,
+    documentAiDetectedTables: input.source.documentAiDetectedTables,
+    extractionMode: "ocr_text_only",
+    fallbackUsed: false,
+    multimodalFallbackAttempted: true,
+    orientationSelected: input.source.orientationSelected,
+    pagesProcessed: input.source.pagesProcessed,
+    profileUsed: "universal-document",
+    providerUsed: "google-document-ai",
+    qualityScore: input.assessment.confidence,
+    qualityStatus: "failed_quality_gate",
+    rawTextContent: input.rawTextContent,
+    reason: input.assessment.reason,
+    textLength: input.rawTextContent.length,
+    visualStructuringProvider: "openai",
+    warnings: input.assessment.warnings,
+  });
 }
 
 async function runFallbackProviderOrThrow({

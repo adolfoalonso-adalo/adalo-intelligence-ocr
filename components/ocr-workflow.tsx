@@ -491,20 +491,20 @@ export function OcrWorkflow({
       {allowProfileTesting && accessMode === "master" ? (
         <div className="rounded-2xl border border-brand-border bg-brand-card px-4 py-3 text-left shadow-sm">
           <label className="block text-xs font-semibold uppercase tracking-[0.2em] text-brand-accent">
-            Perfil de prueba OCR
+            Modo avanzado / legacy
           </label>
           <select
             value={testProfileId}
             onChange={(event) => setTestProfileId(event.target.value as TestProfileId)}
             className="mt-2 w-full rounded-xl border border-brand-border bg-white px-3 py-2 text-sm font-semibold text-brand-deep outline-none transition focus:border-brand-accent"
           >
-            <option value="general">Automatico / general</option>
-            <option value="mateo">Mateo / comprobantes DTVe</option>
-            <option value="movimiento">Movimiento / tablas logisticas</option>
-            <option value="technical-admin">Documento tecnico-administrativo</option>
+            <option value="general">Deteccion automatica universal</option>
+            <option value="mateo">Legacy: comprobantes DTVe</option>
+            <option value="movimiento">Legacy: tablas logisticas</option>
+            <option value="technical-admin">Legacy: documento tecnico-administrativo</option>
           </select>
           <p className="mt-2 text-xs leading-5 text-brand-slate">
-            Visible solo con codigo maestro. Permite probar perfiles internos sin convertirlos en codigos de acceso.
+            Visible solo con codigo maestro. Los modos legacy fuerzan una estructura exclusivamente para diagnostico.
           </p>
         </div>
       ) : null}
@@ -988,6 +988,9 @@ function formatPercentage(value: number) {
 }
 
 function formatExtractionMode(value?: string) {
+  if (value === "document_ai_gpt_optimized") {
+    return "OCR documental optimizado";
+  }
   if (value === "agentic_document_table") {
     return "Extraccion documental con revision automatica";
   }

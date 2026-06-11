@@ -92,6 +92,7 @@ export type OpenAiVisualStructuringInput = {
   fileBuffer: Buffer;
   fileName: string;
   forceProfileColumns?: boolean;
+  maxVisualPages?: number;
   mimeType: string;
   pagesProcessed?: number;
   preprocessing?: DocumentPreprocessingResult;
@@ -384,7 +385,8 @@ export async function createOpenAiVisualInputs(
   const pageCount = await getPdfPageCount(input.fileBuffer);
   const maxPages = Math.min(
     pageCount,
-    readPositiveInteger(process.env.OCR_MULTIMODAL_MAX_PAGES, 4),
+    input.maxVisualPages ??
+      readPositiveInteger(process.env.OCR_MULTIMODAL_MAX_PAGES, 4),
     readPositiveInteger(process.env.OCR_MAX_PDF_PAGES, 30),
   );
   const images: VisualImageInput[] = [];

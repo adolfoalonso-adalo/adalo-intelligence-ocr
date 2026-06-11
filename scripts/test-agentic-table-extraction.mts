@@ -3,8 +3,10 @@ import {
   assertVisibleHeadersTakePriority,
   assessAgenticTableResult,
   containsMovementColumns,
+  findUnsupportedLegacyColumns,
   parseAgenticExtractorResponse,
   parseAgenticReviewerResponse,
+  UNIVERSAL_EXTRACTION_MODE,
 } from "@/lib/agentic-table-extraction";
 import { createXlsxBase64 } from "@/lib/xlsx-export";
 
@@ -36,7 +38,7 @@ const movementHeaders = [
 const extractor = parseAgenticExtractorResponse(
   JSON.stringify({
     documentTitle: "Listado de proveedores",
-    detectedDocumentType: "Listado de proveedores y contrataciones",
+    documentType: "Listado de proveedores y contrataciones",
     detectedHeaders: supplierHeaders,
     rows: [
       {
@@ -52,7 +54,6 @@ const extractor = parseAgenticExtractorResponse(
     ],
     confidence: 0.91,
     warnings: [],
-    needsReview: true,
   }),
 );
 
@@ -73,6 +74,22 @@ const reviewed = parseAgenticReviewerResponse(
 assert.deepEqual(reviewed.finalHeaders, supplierHeaders);
 assert.equal(containsMovementColumns(reviewed.finalHeaders), false);
 assert.equal(assessAgenticTableResult(reviewed).acceptable, true);
+assert.equal(UNIVERSAL_EXTRACTION_MODE, "document_ai_gpt_optimized");
+assert.deepEqual(
+  findUnsupportedLegacyColumns(movementHeaders, supplierHeaders.join(" ")),
+  [
+    "FechaSalida",
+    "CantidadCamion",
+    "Unidad",
+    "Tons",
+    "RutaCaminosPuna",
+    "CantidadEscoltas",
+  ],
+);
+assert.deepEqual(
+  findUnsupportedLegacyColumns(movementHeaders, movementHeaders.join(" ")),
+  [],
+);
 
 assert.deepEqual(
   assertVisibleHeadersTakePriority({

@@ -16,12 +16,13 @@ const MOVEMENT_COLUMNS = new Set([
   "cantidadescoltas",
 ]);
 
+export const UNIVERSAL_EXTRACTION_MODE = "document_ai_gpt_optimized";
+
 export type AgenticExtractorOutput = {
   confidence: number;
   detectedDocumentType: string;
   detectedHeaders: string[];
   documentTitle: string;
-  needsReview: boolean;
   rows: Record<string, string>[];
   warnings: string[];
 };
@@ -41,11 +42,13 @@ export type AgenticDocumentTableResult = CsvAnalysisResult & {
   detectedDocumentType: string;
   detectedHeaders: string[];
   documentTitle?: string;
+  initialDetectedHeaders: string[];
   providerConfidence: number;
+  rejectedLegacyColumns: string[];
 };
 
 export function isAgenticTableModeEnabled() {
-  return getAgenticConfig().enabled;
+  return readBoolean(process.env.OCR_AGENTIC_TABLE_MODE, false);
 }
 
 export async function runAgenticDocumentTableExtraction(
@@ -59,7 +62,10 @@ export async function runAgenticDocumentTableExtraction(
     throw new Error(config.disabledReason);
   }
 
-  const images = await createOpenAiVisualInputs(input);
+  const images = await createOpenAiVisualInputs({
+    ...input,
+    maxVisualPages: config.maxPages,
+  });
   if (images.length === 0) {
     throw new Error("AGENTIC_TABLE_VISUAL_INPUT_UNAVAILABLE");
   }
@@ -77,9 +83,18 @@ export async function runAgenticDocumentTableExtraction(
     config,
   );
   const quality = assessAgenticTableResult(reviewed);
+  const rejectedLegacyColumns = findUnsupportedLegacyColumns(
+    reviewed.finalHeaders,
+    input.rawTextContent,
+  );
 
   if (!quality.acceptable) {
     throw new Error(`AGENTIC_TABLE_QUALITY_FAILED: ${quality.reason}`);
+  }
+  if (rejectedLegacyColumns.length > 0) {
+    throw new Error(
+      `AGENTIC_TABLE_LEGACY_COLUMNS_REJECTED: ${rejectedLegacyColumns.join(", ")}`,
+    );
   }
 
   return {
@@ -90,13 +105,15 @@ export async function runAgenticDocumentTableExtraction(
     detectedHeaders: reviewed.finalHeaders,
     documentTitle: extracted.documentTitle || undefined,
     extractedRows: reviewed.finalRows.length,
-    extractionMode: "agentic_document_table",
+    extractionMode: UNIVERSAL_EXTRACTION_MODE,
     fileName: "ADALO_OCR_TABLA_DOCUMENTAL.csv",
+    initialDetectedHeaders: extracted.detectedHeaders,
     jsonColumns: reviewed.finalHeaders,
     jsonRows: reviewed.finalRows,
     modelUsed: `${config.model} - agentic document table`,
     pagesProcessed: images.length,
     providerConfidence: reviewed.confidence,
+    rejectedLegacyColumns,
     resultQuality: reviewed.warnings.length > 0 ? "partial" : "ai",
     rowsExtracted: reviewed.finalRows.length,
     warnings: reviewed.warnings,
@@ -174,10 +191,10 @@ export function parseAgenticExtractorResponse(
   return {
     confidence: normalizeConfidence(value.confidence),
     detectedDocumentType:
-      normalizeText(value.detectedDocumentType) || "Tabla documental",
+      normalizeText(value.documentType ?? value.detectedDocumentType) ||
+      "Tabla documental",
     detectedHeaders: headers,
     documentTitle: normalizeText(value.documentTitle),
-    needsReview: value.needsReview !== false,
     rows,
     warnings: normalizeStringArray(value.warnings),
   };
@@ -241,20 +258,40 @@ export function containsMovementColumns(headers: string[]) {
   return headers.some((header) => MOVEMENT_COLUMNS.has(normalizeKey(header)));
 }
 
+export function findUnsupportedLegacyColumns(
+  headers: string[],
+  rawTextContent: string,
+) {
+  const visibleText = normalizeKey(rawTextContent);
+
+  return headers.filter((header) => {
+    const normalizedHeader = normalizeKey(header);
+    return (
+      MOVEMENT_COLUMNS.has(normalizedHeader) &&
+      !visibleText.includes(normalizedHeader)
+    );
+  });
+}
+
 function createExtractorPrompt(
   input: OpenAiVisualStructuringInput & { profileHint?: string },
 ) {
   const rawText = input.rawTextContent.slice(0, 30000);
   const hint = input.profileHint
-    ? `Contexto opcional, no vinculante: ${input.profileHint}. No impongas sus columnas si no coinciden con el documento.`
-    : "No hay un perfil documental obligatorio.";
+    ? `Contexto legacy opcional y no vinculante: ${input.profileHint}. Ignoralo si no coincide con los encabezados visibles.`
+    : "No hay perfiles documentales ni columnas predefinidas.";
 
   return `Sos el agente extractor universal de ADALO OCR.
 
 Analiza visualmente el documento y el texto OCR de apoyo. Detecta el tipo real, el titulo, los encabezados visibles y reconstruye cada fila respetando esos encabezados.
 
+Archivo: ${input.fileName}
+Tipo MIME: ${input.mimeType}
+Paginas preparadas: ${input.pagesProcessed ?? "desconocido"}
+
 Reglas criticas:
 - Los encabezados visibles tienen prioridad absoluta.
+- No uses perfiles internos ni columnas predefinidas; detecta los encabezados reales del documento.
 - No mapees datos a columnas predefinidas que no aparezcan en el documento.
 - No inventes encabezados, filas ni valores.
 - Corrige solo errores evidentes de OCR.
@@ -281,7 +318,8 @@ Compara la propuesta del extractor con las imagenes y el texto OCR. Corregi enca
 
 Reglas:
 - Los encabezados visibles del documento tienen prioridad absoluta.
-- Nunca reemplaces encabezados reales por columnas de un perfil interno.
+- Rechaza cualquier columna heredada de perfiles internos que no aparezca visible en el documento.
+- Nunca reemplaces encabezados reales por columnas de Movimiento, Mateo u otro perfil legacy.
 - No inventes informacion.
 - Si un valor no es legible, dejalo vacio.
 - Conserva una fila por registro real.
@@ -304,7 +342,7 @@ function createExtractorFormat() {
       type: "object",
       properties: {
         documentTitle: { type: ["string", "null"] },
-        detectedDocumentType: { type: "string" },
+        documentType: { type: "string" },
         detectedHeaders: { type: "array", items: { type: "string" } },
         rows: {
           type: "array",
@@ -317,16 +355,14 @@ function createExtractorFormat() {
         },
         confidence: { type: "number", minimum: 0, maximum: 1 },
         warnings: { type: "array", items: { type: "string" } },
-        needsReview: { type: "boolean" },
       },
       required: [
         "documentTitle",
-        "detectedDocumentType",
+        "documentType",
         "detectedHeaders",
         "rows",
         "confidence",
         "warnings",
-        "needsReview",
       ],
       additionalProperties: false,
     },
@@ -480,6 +516,7 @@ function getAgenticConfig() {
       process.env.OPENAI_AGENTIC_MAX_OUTPUT_TOKENS,
       16000,
     ),
+    maxPages: readPositiveInteger(process.env.OCR_AGENTIC_MAX_PAGES, 10),
     model:
       process.env.OPENAI_AGENTIC_EXTRACTOR_MODEL?.trim() ||
       process.env.OPENAI_VISUAL_MODEL?.trim() ||

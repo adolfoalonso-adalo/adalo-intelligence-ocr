@@ -198,52 +198,80 @@ type DocumentAiTableRow = {
   }>;
 };
 
+export type GoogleDocumentAISource = {
+  documentAiDetectedTables: boolean;
+  orientationSelected: 0 | 90 | 180 | 270;
+  pagesProcessed: number;
+  rawTextContent: string;
+  tablesText: string;
+};
+
+export async function extractGoogleDocumentAiSource(input: {
+  fileBuffer: Buffer;
+  mimeType: string;
+}): Promise<GoogleDocumentAISource> {
+  const config = getGoogleDocumentAiConfig();
+  const auth = resolveGoogleDocumentAiClientOptions(config);
+  const documentAi = (await import("@google-cloud/documentai")) as DocumentAiModule;
+  const Client = documentAi.v1?.DocumentProcessorServiceClient;
+
+  if (!Client) {
+    throw new CsvAnalysisError(
+      "Google Document AI no esta disponible en el runtime.",
+      "GOOGLE_DOCUMENT_AI_CLIENT_UNAVAILABLE",
+    );
+  }
+
+  console.info("[OCR] Google Document AI authentication configured", {
+    authMode: auth.authMode,
+    location: config.location,
+    projectIdConfigured: Boolean(config.projectId),
+  });
+
+  const client = new Client(auth.clientOptions);
+  const name =
+    typeof client.processorPath === "function"
+      ? client.processorPath(config.projectId, config.location, config.processorId)
+      : `projects/${config.projectId}/locations/${config.location}/processors/${config.processorId}`;
+  const selectedDocument = await selectDocumentAiOrientation({
+    client,
+    fileBuffer: input.fileBuffer,
+    mimeType: input.mimeType,
+    name,
+  });
+  const document = selectedDocument.document;
+
+  if (!document?.text?.trim()) {
+    throw new CsvAnalysisError(
+      "Google Document AI no devolvio texto util.",
+      "GOOGLE_DOCUMENT_AI_EMPTY_TEXT",
+    );
+  }
+
+  const rawTextContent = sanitizeRawOcrText(document.text);
+  const tablesText = extractDocumentAiTablesText(document);
+
+  return {
+    documentAiDetectedTables: Boolean(tablesText),
+    orientationSelected: selectedDocument.orientationSelected,
+    pagesProcessed: document.pages?.length ?? 0,
+    rawTextContent,
+    tablesText,
+  };
+}
+
 export class GoogleDocumentAIOCRProvider implements OCRProvider {
   name: OCRProviderName = "google-document-ai";
   supportsScannedPdf = true;
   supportsTables = true;
 
   async extract(input: OCRProviderInput): Promise<OCRProviderResult> {
-    const config = getGoogleDocumentAiConfig();
-    const auth = resolveGoogleDocumentAiClientOptions(config);
-    const documentAi = (await import("@google-cloud/documentai")) as DocumentAiModule;
-    const Client = documentAi.v1?.DocumentProcessorServiceClient;
-
-    if (!Client) {
-      throw new CsvAnalysisError(
-        "Google Document AI no esta disponible en el runtime.",
-        "GOOGLE_DOCUMENT_AI_CLIENT_UNAVAILABLE",
-      );
-    }
-
-    console.info("[OCR] Google Document AI authentication configured", {
-      authMode: auth.authMode,
-      location: config.location,
-      projectIdConfigured: Boolean(config.projectId),
-    });
-
-    const client = new Client(auth.clientOptions);
-    const name =
-      typeof client.processorPath === "function"
-        ? client.processorPath(config.projectId, config.location, config.processorId)
-        : `projects/${config.projectId}/locations/${config.location}/processors/${config.processorId}`;
-    const selectedDocument = await selectDocumentAiOrientation({
-      client,
+    const source = await extractGoogleDocumentAiSource({
       fileBuffer: input.fileBuffer,
       mimeType: input.mimeType,
-      name,
     });
-    const document = selectedDocument.document;
-
-    if (!document?.text?.trim()) {
-      throw new CsvAnalysisError(
-        "Google Document AI no devolvio texto util.",
-        "GOOGLE_DOCUMENT_AI_EMPTY_TEXT",
-      );
-    }
-
-    const rawTextContent = sanitizeRawOcrText(document.text);
-    const tablesText = extractDocumentAiTablesText(document);
+    const rawTextContent = source.rawTextContent;
+    const tablesText = source.tablesText;
     const classification = classifyInternalOCRProfile({
       configuredProfile: input.clientProfile,
       fileName: input.fileName,
@@ -296,7 +324,7 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
         ...createPersonnelPatternResult({
           fileName: input.fileName,
           hasExplicitTables: Boolean(tablesText),
-          pageCount: document.pages?.length ?? 0,
+          pageCount: source.pagesProcessed,
           pattern: personnelPattern,
         }),
         internalProfile: classification.profile,
@@ -317,7 +345,7 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
         dnisDetected: companyPersonnelPattern.metrics.dnisDetectados,
         rowsExtracted:
           companyPersonnelPattern.metrics.registrosEstructurados,
-        orientationSelected: selectedDocument.orientationSelected,
+        orientationSelected: source.orientationSelected,
       });
     }
 
@@ -325,8 +353,8 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
       return {
         ...createCompanyPersonnelPatternResult({
           hasExplicitTables: Boolean(tablesText),
-          orientationSelected: selectedDocument.orientationSelected,
-          pageCount: document.pages?.length ?? 1,
+          orientationSelected: source.orientationSelected,
+          pageCount: source.pagesProcessed || 1,
           pattern: companyPersonnelPattern,
         }),
         internalProfile: classification.profile,
@@ -345,7 +373,7 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
         extractedTablesText: tablesText,
         extractedText: rawTextContent,
         fileName: input.fileName,
-        pageCount: document.pages?.length,
+        pageCount: source.pagesProcessed,
         providerLabel: "google-document-ai",
       });
     } catch (error) {
@@ -356,8 +384,8 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
         documentAiDetectedTables: Boolean(tablesText),
         extractionMode: "ocr_text_only",
         fallbackUsed: false,
-        pagesProcessed: document.pages?.length ?? 0,
-        orientationSelected: selectedDocument.orientationSelected,
+        pagesProcessed: source.pagesProcessed,
+        orientationSelected: source.orientationSelected,
         profileUsed: getClientProfileCode(classification.profile),
         providerUsed: this.name,
         qualityScore:
@@ -388,7 +416,7 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
       providerUsed: this.name,
       rawTextContent,
       textLength: rawTextContent.length,
-      orientationSelected: selectedDocument.orientationSelected,
+      orientationSelected: source.orientationSelected,
       warnings: [
         ...(normalized.warnings ?? []),
         ...(tablesText ? [] : ["Google Document AI no detecto tablas explicitas; se normalizo desde texto OCR."]),

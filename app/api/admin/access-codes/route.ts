@@ -3,7 +3,6 @@ import { NextResponse } from "next/server";
 import { hashAccessCode } from "@/lib/access-code";
 import { requireAdminSession } from "@/lib/admin";
 import { getPrismaClient } from "@/lib/db";
-import { normalizeProfileRestriction } from "@/lib/profile-restrictions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,50 +29,13 @@ export async function POST(request: Request) {
 
   const body = (await request.json().catch(() => null)) as
     | {
-        allowedProfiles?: unknown;
         clientId?: unknown;
         expiresAt?: unknown;
-        forcedProfile?: unknown;
         planId?: unknown;
-        restrictionMode?: unknown;
       }
     | null;
   const clientId = typeof body?.clientId === "string" ? body.clientId : "";
   const requestedPlanId = typeof body?.planId === "string" ? body.planId : "";
-  const profileRestriction = normalizeProfileRestriction({
-    allowedProfiles: Array.isArray(body?.allowedProfiles)
-      ? body.allowedProfiles.filter(
-          (profileId): profileId is string => typeof profileId === "string",
-        )
-      : [],
-    forcedProfile:
-      typeof body?.forcedProfile === "string" ? body.forcedProfile : undefined,
-    mode:
-      typeof body?.restrictionMode === "string"
-        ? body.restrictionMode
-        : "automatic",
-  });
-
-  if (
-    body?.restrictionMode === "allowed_profiles" &&
-    profileRestriction.mode !== "allowed_profiles"
-  ) {
-    return NextResponse.json(
-      { success: false, error: "Selecciona al menos un tipo documental permitido." },
-      { status: 422 },
-    );
-  }
-
-  if (
-    body?.restrictionMode === "forced_profile" &&
-    profileRestriction.mode !== "forced_profile"
-  ) {
-    return NextResponse.json(
-      { success: false, error: "Selecciona el tipo documental obligatorio." },
-      { status: 422 },
-    );
-  }
-
   const client = clientId
     ? await prisma.client.findUnique({ where: { id: clientId }, include: { plan: true } })
     : null;
@@ -104,9 +66,9 @@ export async function POST(request: Request) {
       displayCodePrefix: prefix,
       expiresAt: expiresAt && Number.isFinite(expiresAt.getTime()) ? expiresAt : null,
       planId: plan.id,
-      allowedProfiles: profileRestriction.allowedProfiles,
-      forcedProfile: profileRestriction.forcedProfile ?? null,
-      restrictionMode: profileRestriction.mode,
+      allowedProfiles: [],
+      forcedProfile: null,
+      restrictionMode: "automatic",
       status: "active",
     },
   });

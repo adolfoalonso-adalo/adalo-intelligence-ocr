@@ -10,17 +10,20 @@ La app usa como estrategia principal JSON estructurado generado por Google AI y 
 
 Despues del procesamiento, la UI muestra una vista previa compacta de los primeros registros y permite descargar el CSV completo y, si el plan lo permite, un JSON con metadata, columnas y filas.
 
-## Modo agente para tablas documentales
+## OCR documental universal optimizado
 
-`OCR_AGENTIC_TABLE_MODE="true"` habilita la estrategia universal recomendada para documentos tabulares. Un primer agente analiza las paginas, detecta el tipo real del documento, conserva los encabezados visibles y reconstruye las filas. Un segundo agente revisa la propuesta contra las mismas paginas y el texto OCR antes de pasarla por el quality gate.
+`OCR_AGENTIC_TABLE_MODE="true"` habilita la ruta productiva `document_ai_gpt_optimized`. Google Document AI recupera primero texto, layout y senales tabulares. Luego un agente GPT analiza las paginas renderizadas junto con ese OCR, detecta el tipo real, conserva los encabezados visibles y reconstruye las filas. Un segundo agente GPT revisa la propuesta contra las mismas paginas y el texto OCR antes de pasarla por el quality gate.
 
-Los perfiles internos funcionan como pistas opcionales. No pueden reemplazar los encabezados visibles ni imponer columnas de otro documento, salvo cuando el administrador configura expresamente `forcedProfile`. Esto evita, por ejemplo, convertir una tabla de proveedores en columnas de movimiento de camiones.
+En esta ruta no se ejecutan clasificadores, patrones ni columnas de perfiles internos. Los perfiles Movimiento, Mateo, nomina y otros quedan aislados como modos legacy de diagnostico y solo se activan mediante `forcedProfile` o el selector master. Los codigos comerciales nuevos usan deteccion universal automaticamente.
+
+Los encabezados visibles tienen prioridad absoluta. Si GPT propone columnas legacy que no aparecen en el OCR del documento, la extraccion se rechaza en lugar de generar un CSV semanticamente incorrecto. Esto evita, por ejemplo, convertir una tabla de proveedores en columnas de movimiento de camiones.
 
 Variables:
 
 ```env
 OCR_AGENTIC_TABLE_MODE="true"
 OCR_AGENTIC_TIMEOUT_SECONDS="90"
+OCR_AGENTIC_MAX_PAGES="10"
 OPENAI_AGENTIC_EXTRACTOR_MODEL="gpt-5.4-mini"
 OPENAI_AGENTIC_REVIEWER_MODEL="gpt-5.4-mini"
 OPENAI_AGENTIC_MAX_OUTPUT_TOKENS="16000"

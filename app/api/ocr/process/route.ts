@@ -35,6 +35,7 @@ import {
   normalizeOcrBlobContentType,
 } from "@/lib/ocr-blob";
 import { OCRTextOnlyError } from "@/lib/ocr-diagnostics";
+import { isAgenticTableModeEnabled } from "@/lib/agentic-table-extraction";
 import { runOcrExtraction } from "@/lib/ocr-orchestrator";
 import type { OCRQualityStatus } from "@/lib/ocr-quality";
 import {
@@ -163,7 +164,7 @@ export async function POST(request: Request) {
     }
 
     usageContext = usageCheck.context;
-    const profileRestriction =
+    let profileRestriction =
       usageContext?.profileRestriction ??
       normalizeProfileRestriction({
         allowedProfiles: accessSession?.allowedProfiles,
@@ -193,6 +194,12 @@ export async function POST(request: Request) {
 
     if (accessSession?.allowProfileTesting && testProfileId) {
       clientProfile = getClientProfileById(testProfileId);
+      if (clientProfile.id !== "internal-general") {
+        profileRestriction = normalizeProfileRestriction({
+          forcedProfile: clientProfile.id,
+          mode: "forced_profile",
+        });
+      }
       console.info("[OCR API] master test profile selected", {
         profileId: clientProfile.id,
         profileCode: getClientProfileCode(clientProfile),
@@ -307,7 +314,11 @@ export async function POST(request: Request) {
       downloadedBytes: fileBuffer.byteLength,
     });
     let mimeType = blobMimeType;
-    const documentType = resolveDocumentTypeForProfile(detectedDocumentType, clientProfile);
+    const documentType =
+      isAgenticTableModeEnabled() &&
+      profileRestriction.mode !== "forced_profile"
+        ? "auto"
+        : resolveDocumentTypeForProfile(detectedDocumentType, clientProfile);
     estimatedDocumentType = documentType;
     const globalSizeLimitMb = getMaxSizeMbForMimeType(mimeType);
     const effectiveSizeLimitMb = getPlanAwareMaxSizeMb(mimeType, usageContext, globalSizeLimitMb);
@@ -356,7 +367,10 @@ export async function POST(request: Request) {
       mimeType,
       size: blobMetadata.size,
       documentType,
-      clientProfileId: clientProfile.id,
+      clientProfileId:
+        profileRestriction.mode === "forced_profile"
+          ? clientProfile.id
+          : "universal-document",
       transport: "vercel-blob",
     });
 
@@ -498,7 +512,12 @@ export async function POST(request: Request) {
         throw analysisError;
       }
 
-      if (mimeType === "application/pdf" && !isVisionTableProfile(clientProfile)) {
+      if (
+        mimeType === "application/pdf" &&
+        !isVisionTableProfile(clientProfile) &&
+        (!isAgenticTableModeEnabled() ||
+          profileRestriction.mode === "forced_profile")
+      ) {
         try {
           const fallbackStartedAt = Date.now();
           const fallback = await createLocalPdfTextFallbackFromBuffer(
@@ -861,6 +880,11 @@ async function successResponse(
     detectedDocumentType?: string;
     detectedHeaders?: string[];
     documentTitle?: string;
+    documentAiUsed?: boolean;
+    gptExtractorUsed?: boolean;
+    gptReviewerUsed?: boolean;
+    legacyProfilesBypassed?: boolean;
+    rejectedLegacyColumns?: string[];
   },
   startedAt: number,
   rateLimit: RateLimitResult,
@@ -876,6 +900,14 @@ async function successResponse(
   } = {},
 ) {
   const durationMs = Date.now() - startedAt;
+  const usesUniversalExtraction =
+    result.extractionMode === "document_ai_gpt_optimized";
+  const resolvedProfileCode = usesUniversalExtraction
+    ? undefined
+    : result.profileCode ?? getClientProfileCode(context.clientProfile);
+  const resolvedProfileName = usesUniversalExtraction
+    ? result.profileName
+    : result.profileName ?? context.clientProfile?.label;
   const extractionKind = resolveCsvFileKind(result, strategy, context);
   const fileName = createCsvFileName(extractionKind);
   const jsonFileName = fileName.replace(/\.csv$/i, ".json");
@@ -893,13 +925,16 @@ async function successResponse(
     sheetName: result.detectedDocumentType || "Resultados",
   });
   const metadata = createExtractionMetadata({
-    clientProfileId: result.profileCode ?? context.clientProfile?.id,
+    clientProfileId: usesUniversalExtraction
+      ? undefined
+      : result.profileCode ?? context.clientProfile?.id,
     accessMode: context.accessSession?.accessMode === "master" ? "master" : "client",
     isInternalTest: context.accessSession?.isInternalTest === true,
     durationMs,
     automaticReviewApplied: result.automaticReviewApplied,
     correctionsApplied: result.correctionsApplied,
     detectedHeaders: result.detectedHeaders,
+    documentAiUsed: result.documentAiUsed,
     documentType:
       result.detectedDocumentType ?? context.clientProfile?.documentType,
     extractionKind,
@@ -909,16 +944,20 @@ async function successResponse(
     outputFileName: fileName,
     outputJsonFileName: jsonFileName,
     orientationSelected: result.orientationSelected,
-    profileCode: result.profileCode ?? getClientProfileCode(context.clientProfile),
-    profileName: result.profileName ?? context.clientProfile?.label,
+    profileCode: resolvedProfileCode,
+    profileName: resolvedProfileName,
     records: rows.length,
     primaryProvider: result.primaryProvider,
     fallbackProvider: result.fallbackProvider,
     providerUsed: result.providerUsed,
+    gptExtractorUsed: result.gptExtractorUsed,
+    gptReviewerUsed: result.gptReviewerUsed,
+    legacyProfilesBypassed: result.legacyProfilesBypassed,
     confidence: result.confidence,
     qualityStatus: result.qualityStatus,
     pagesProcessed: result.pagesProcessed,
     rowsExtracted: result.rowsExtracted ?? result.extractedRows,
+    rejectedLegacyColumns: result.rejectedLegacyColumns,
     visualStructuringProvider: result.visualStructuringProvider,
     warnings: [...(result.profileValidationWarnings ?? []), ...(result.warnings ?? [])],
   });
@@ -958,8 +997,8 @@ async function successResponse(
       allowJsonExport,
       extractedRows: result.extractedRows,
       modelUsed: result.modelUsed,
-      profileCode: result.profileCode ?? getClientProfileCode(context.clientProfile),
-      profileName: result.profileName ?? context.clientProfile?.label,
+      profileCode: resolvedProfileCode,
+      profileName: resolvedProfileName,
       extractionMode: result.extractionMode ?? context.clientProfile?.extractionMode,
       extractionType: result.extractionType ?? context.clientProfile?.userFacingExtractionType,
       automaticReviewApplied: result.automaticReviewApplied,
@@ -967,6 +1006,11 @@ async function successResponse(
       detectedDocumentType: result.detectedDocumentType,
       detectedHeaders: result.detectedHeaders,
       documentTitle: result.documentTitle,
+      documentAiUsed: result.documentAiUsed,
+      gptExtractorUsed: result.gptExtractorUsed,
+      gptReviewerUsed: result.gptReviewerUsed,
+      legacyProfilesBypassed: result.legacyProfilesBypassed,
+      rejectedLegacyColumns: result.rejectedLegacyColumns,
       resultQuality: result.resultQuality,
       providerUsed: result.providerUsed,
       visualStructuringProvider: result.visualStructuringProvider,
@@ -1021,6 +1065,26 @@ function resolveCsvFileKind(
     ).length >= 3
   ) {
     return "PROVEEDORES";
+  }
+
+  if (result.extractionMode === "document_ai_gpt_optimized") {
+    if (
+      normalizedDetectedType.includes("nomina") ||
+      normalizedDetectedType.includes("personal")
+    ) {
+      return "NOMINA";
+    }
+
+    if (
+      normalizedDetectedType.includes("movimiento") &&
+      ["fechasalida", "cantidadcamion", "rutacaminospuna"].filter((column) =>
+        normalizedDetectedHeaders.includes(column),
+      ).length >= 2
+    ) {
+      return "MOVIMIENTO";
+    }
+
+    return "TABLA_DOCUMENTAL";
   }
 
   if (result.profileCode === "internal-nomina-personal") {

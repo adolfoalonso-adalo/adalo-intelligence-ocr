@@ -217,7 +217,7 @@ export default async function AdminPage() {
                 <tr>
                   <Th>Nombre</Th>
                   <Th>Email</Th>
-                  <Th>Perfil heredado</Th>
+                  <Th>OCR</Th>
                   <Th>Estado</Th>
                   <Th>Plan</Th>
                   <Th>Usos del mes</Th>
@@ -229,7 +229,7 @@ export default async function AdminPage() {
                   <tr key={client.id} className="border-t border-brand-border">
                     <Td>{client.name}</Td>
                     <Td>{client.email || "-"}</Td>
-                    <Td>{client.profileId}</Td>
+                    <Td>Deteccion universal</Td>
                     <Td>{client.status}</Td>
                     <Td>{client.plan?.name || "-"}</Td>
                     <Td>{client.usageEvents.length}</Td>
@@ -239,7 +239,6 @@ export default async function AdminPage() {
                           clientId={client.id}
                           defaultPlanId={client.planId}
                           plans={plans}
-                          profileOptions={ADMIN_PROFILE_OPTIONS}
                         />
                         <details className="rounded-xl border border-brand-border bg-brand-cream p-3">
                           <summary className="cursor-pointer text-xs font-semibold text-brand-deep">
@@ -322,7 +321,7 @@ export default async function AdminPage() {
                       <div className="space-y-3">
                         <details className="rounded-xl border border-brand-border bg-brand-cream p-3">
                           <summary className="cursor-pointer text-xs font-semibold text-brand-deep">
-                            Configurar restriccion
+                            Modo avanzado / legacy
                           </summary>
                           <form action={updateAccessCodeRestrictionAction} className="mt-3 space-y-3">
                             <input type="hidden" name="accessCodeId" value={code.id} />
