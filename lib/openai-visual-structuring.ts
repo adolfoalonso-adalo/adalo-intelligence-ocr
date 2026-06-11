@@ -81,7 +81,7 @@ type OpenAiVisualExtraction = {
   warnings?: unknown;
 };
 
-type VisualImageInput = {
+export type VisualImageInput = {
   detail: "high";
   image_url: string;
   type: "input_image";
@@ -91,6 +91,7 @@ export type OpenAiVisualStructuringInput = {
   documentType: DocumentType;
   fileBuffer: Buffer;
   fileName: string;
+  forceProfileColumns?: boolean;
   mimeType: string;
   pagesProcessed?: number;
   preprocessing?: DocumentPreprocessingResult;
@@ -116,7 +117,7 @@ export async function runOpenAiVisualStructuring(
   }
 
   const startedAt = Date.now();
-  const imageInputs = await createVisualInputs(input);
+  const imageInputs = await createOpenAiVisualInputs(input);
 
   if (imageInputs.length === 0) {
     throw new CsvAnalysisError(
@@ -125,7 +126,9 @@ export async function runOpenAiVisualStructuring(
     );
   }
 
-  const expectedColumns = getExpectedColumns(input.profile);
+  const expectedColumns = input.forceProfileColumns
+    ? getExpectedColumns(input.profile)
+    : [];
   const client = new OpenAI({
     apiKey: config.apiKey,
     timeout: config.timeoutMs,
@@ -363,7 +366,7 @@ function disabledConfig(disabledReason: string) {
   };
 }
 
-async function createVisualInputs(
+export async function createOpenAiVisualInputs(
   input: OpenAiVisualStructuringInput,
 ): Promise<VisualImageInput[]> {
   if (input.mimeType === "image/jpeg" || input.mimeType === "image/png") {

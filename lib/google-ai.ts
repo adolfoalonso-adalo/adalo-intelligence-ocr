@@ -239,6 +239,19 @@ function createAdvancedOcrNormalizationPrompt({
   pageCount?: number;
   providerLabel: string;
 }) {
+  const forcedMovementGuidance =
+    isVisionTableProfile(clientProfile) && clientProfile
+      ? `Si el perfil forzado es Movimiento, usa exactamente estas columnas y este orden:
+${(clientProfile.expectedColumns ?? []).join("\n")}
+
+Para Movimiento:
+- una fila por cada movimiento logistico real;
+- ignora CamScanner, URLs, folios, sellos, bordes, sombras y numeros de pagina;
+- no mezcles filas;
+- normaliza fechas a DD/MM/YYYY solo cuando sea claro;
+- si no hay filas validas, devuelve rows: [].`
+      : "";
+
   return `Actua como normalizador documental ADALO.
 
 Recibiste texto y tablas extraidas por un proveedor OCR avanzado (${providerLabel}). Tu tarea NO es hacer OCR visual, sino convertir esa salida OCR a JSON estructurado para que el servidor genere CSV/JSON seguros.
@@ -270,25 +283,7 @@ Reglas generales:
 - Revisa la salida completa antes de responder: las columnas deben ser consistentes y cada row debe usar exactamente esas claves.
 - El servidor va a generar el CSV final; no devuelvas CSV directo.
 
-Si el perfil es Movimiento, usa exactamente estas columnas y este orden:
-FechaSalida
-CantidadCamion
-Unidad
-Tons
-Proveedor
-Producto
-Origen
-RutaCaminosPuna
-Destino
-FechaArribo
-CantidadEscoltas
-
-Para Movimiento:
-- una fila por cada movimiento logistico real;
-- ignora CamScanner, URLs, folios, sellos, bordes, sombras y numeros de pagina;
-- no mezcles filas;
-- normaliza fechas a DD/MM/YYYY solo cuando sea claro;
-- si no hay filas validas, devuelve rows: [].
+${forcedMovementGuidance}
 
 Estructura requerida:
 {

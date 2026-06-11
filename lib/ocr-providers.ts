@@ -252,10 +252,12 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
       text: rawTextContent,
     });
     const clientProfile = await withCorrectionExamples(classification.profile);
-    const documentType = resolveDocumentTypeForProfile(
-      classification.confidence === "low" ? input.documentType : "auto",
-      classification.profile,
-    );
+    const profileIsForced =
+      input.profileRestriction?.mode === "forced_profile";
+    const normalizationProfile = profileIsForced ? clientProfile : undefined;
+    const documentType = profileIsForced
+      ? resolveDocumentTypeForProfile(input.documentType, classification.profile)
+      : "auto";
     console.info("[OCR] internal profile classified", {
       allowedProfiles: classification.allowedProfiles,
       confidence: classification.confidence,
@@ -338,7 +340,7 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
 
     try {
       normalized = await analyzeExtractedDocumentToCsv({
-        clientProfile,
+        clientProfile: normalizationProfile,
         documentType,
         extractedTablesText: tablesText,
         extractedText: rawTextContent,
@@ -380,7 +382,7 @@ export class GoogleDocumentAIOCRProvider implements OCRProvider {
     }
 
     return {
-      ...normalizeProviderResultForProfile(normalized, classification.profile),
+      ...normalizeProviderResultForProfile(normalized, normalizationProfile),
       documentAiDetectedTables: Boolean(tablesText),
       internalProfile: classification.profile,
       providerUsed: this.name,

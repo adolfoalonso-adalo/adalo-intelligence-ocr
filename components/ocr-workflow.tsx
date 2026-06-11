@@ -6,6 +6,7 @@ import { CsvResultsPreview } from "@/components/csv-results-preview";
 import { DownloadCsvButton } from "@/components/download-csv-button";
 import { DownloadJsonButton } from "@/components/download-json-button";
 import { DownloadRawTextButton } from "@/components/download-raw-text-button";
+import { DownloadXlsxButton } from "@/components/download-xlsx-button";
 import { PdfDropzone } from "@/components/pdf-dropzone";
 import { ProcessingStatus } from "@/components/processing-status";
 import {
@@ -74,6 +75,8 @@ type ProcessResponse = {
   fileName?: string;
   jsonContent?: string;
   jsonFileName?: string;
+  xlsxContentBase64?: string;
+  xlsxFileName?: string;
   allowJsonExport?: boolean;
   extractedRows?: number;
   modelUsed?: string;
@@ -103,6 +106,12 @@ type ProcessResponse = {
   personnelQualityMetrics?: PersonnelQualityMetrics;
   companyPersonnelQualityMetrics?: CompanyPersonnelQualityMetrics;
   orientationSelected?: number;
+  automaticReviewApplied?: boolean;
+  correctionsApplied?: string[];
+  detectedDocumentType?: string;
+  detectedHeaders?: string[];
+  documentTitle?: string;
+  confidence?: number;
   allowedProfiles?: string[];
   detectedProfileBeforeRestriction?: string;
   forcedProfile?: string;
@@ -155,6 +164,8 @@ export function OcrWorkflow({
     fileName: string;
     jsonContent?: string;
     jsonFileName?: string;
+    xlsxContentBase64?: string;
+    xlsxFileName?: string;
     allowJsonExport?: boolean;
     extractedRows: number;
     profileCode?: string;
@@ -166,6 +177,13 @@ export function OcrWorkflow({
     personnelQualityMetrics?: PersonnelQualityMetrics;
     companyPersonnelQualityMetrics?: CompanyPersonnelQualityMetrics;
     orientationSelected?: number;
+    automaticReviewApplied?: boolean;
+    correctionsApplied?: string[];
+    detectedDocumentType?: string;
+    detectedHeaders?: string[];
+    documentTitle?: string;
+    confidence?: number;
+    warnings?: string[];
     allowedProfiles?: string[];
     detectedProfileBeforeRestriction?: string;
     forcedProfile?: string;
@@ -397,6 +415,8 @@ export function OcrWorkflow({
         fileName: data.fileName,
         jsonContent: data.jsonContent,
         jsonFileName: data.jsonFileName,
+        xlsxContentBase64: data.xlsxContentBase64,
+        xlsxFileName: data.xlsxFileName,
         allowJsonExport: data.allowJsonExport,
         extractedRows: data.extractedRows ?? 0,
         profileCode: data.profileCode,
@@ -409,6 +429,13 @@ export function OcrWorkflow({
         companyPersonnelQualityMetrics:
           data.companyPersonnelQualityMetrics,
         orientationSelected: data.orientationSelected,
+        automaticReviewApplied: data.automaticReviewApplied,
+        correctionsApplied: data.correctionsApplied,
+        detectedDocumentType: data.detectedDocumentType,
+        detectedHeaders: data.detectedHeaders,
+        documentTitle: data.documentTitle,
+        confidence: data.confidence,
+        warnings: data.warnings,
         allowedProfiles: data.allowedProfiles,
         detectedProfileBeforeRestriction:
           data.detectedProfileBeforeRestriction,
@@ -531,8 +558,31 @@ export function OcrWorkflow({
           <p>
             Extraccion: {formatExtractionMode(result.extractionMode)}
             {" · "}
-            Salida: CSV estructurado + JSON estructurado
+            Salida: CSV + JSON + Excel
           </p>
+          {result.detectedHeaders?.length ? (
+            <p className="mt-1">
+              Encabezados detectados: {result.detectedHeaders.join(" · ")}
+            </p>
+          ) : null}
+          <p className="mt-1">
+            {typeof result.confidence === "number"
+              ? `Confianza: ${Math.round(result.confidence * 100)}%`
+              : null}
+            {result.automaticReviewApplied
+              ? `${typeof result.confidence === "number" ? " · " : ""}Revision automatica aplicada`
+              : ""}
+          </p>
+          {result.correctionsApplied?.length ? (
+            <p className="mt-1">
+              Correcciones: {result.correctionsApplied.join(" · ")}
+            </p>
+          ) : null}
+          {result.warnings?.length ? (
+            <p className="mt-1">
+              Advertencias: {result.warnings.slice(0, 3).join(" · ")}
+            </p>
+          ) : null}
           {allowProfileTesting && accessMode === "master" && result.profileCode ? (
             <div className="mt-1 text-[11px] opacity-70">
               <p>profileUsed: {result.profileCode}</p>
@@ -664,6 +714,12 @@ export function OcrWorkflow({
               <DownloadJsonButton
                 fileName={result.jsonFileName}
                 jsonContent={result.jsonContent}
+              />
+            ) : null}
+            {result.xlsxContentBase64 && result.xlsxFileName ? (
+              <DownloadXlsxButton
+                base64Content={result.xlsxContentBase64}
+                fileName={result.xlsxFileName}
               />
             ) : null}
             <button
@@ -932,6 +988,9 @@ function formatPercentage(value: number) {
 }
 
 function formatExtractionMode(value?: string) {
+  if (value === "agentic_document_table") {
+    return "Extraccion documental con revision automatica";
+  }
   if (value === "vision_table") return "OCR visual tabular";
   if (value === "multimodal_structured") return "Interpretación visual avanzada";
   if (value === "text_chunks") return "Texto por chunks";

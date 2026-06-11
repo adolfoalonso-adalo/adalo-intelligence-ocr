@@ -7,7 +7,9 @@ export type CsvFileKind =
   | "MOVIMIENTO"
   | "NOMINA"
   | "PERSONAL_EMPRESA"
-  | "PDF_TABULAR";
+  | "PDF_TABULAR"
+  | "PROVEEDORES"
+  | "TABLA_DOCUMENTAL";
 
 export function createCsvFileName(kind: CsvFileKind = "GENERAL", date = new Date()) {
   const year = date.getFullYear();

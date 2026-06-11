@@ -2,6 +2,9 @@ export type ExtractionMetadataInput = {
   accessMode?: "client" | "legacy" | "master";
   clientProfileId?: string;
   confidence?: number;
+  automaticReviewApplied?: boolean;
+  correctionsApplied?: string[];
+  detectedHeaders?: string[];
   documentType?: string;
   durationMs?: number;
   extractionKind: string;
@@ -30,6 +33,9 @@ export type ExtractionMetadata = {
   accessMode?: "client" | "legacy" | "master";
   clientProfileId?: string;
   confidence?: number;
+  automaticReviewApplied?: boolean;
+  correctionsApplied?: string[];
+  detectedHeaders?: string[];
   documentType?: string;
   durationMs?: number;
   extractionKind: string;
@@ -56,8 +62,11 @@ export type ExtractionMetadata = {
 
 export function createExtractionMetadata({
   accessMode,
+  automaticReviewApplied,
   clientProfileId,
   confidence,
+  correctionsApplied,
+  detectedHeaders,
   documentType,
   durationMs,
   extractionKind,
@@ -83,8 +92,11 @@ export function createExtractionMetadata({
 }: ExtractionMetadataInput): ExtractionMetadata {
   return {
     accessMode,
+    automaticReviewApplied,
     clientProfileId,
     confidence,
+    correctionsApplied,
+    detectedHeaders,
     documentType,
     durationMs,
     extractionKind,

@@ -10,6 +10,24 @@ La app usa como estrategia principal JSON estructurado generado por Google AI y 
 
 Despues del procesamiento, la UI muestra una vista previa compacta de los primeros registros y permite descargar el CSV completo y, si el plan lo permite, un JSON con metadata, columnas y filas.
 
+## Modo agente para tablas documentales
+
+`OCR_AGENTIC_TABLE_MODE="true"` habilita la estrategia universal recomendada para documentos tabulares. Un primer agente analiza las paginas, detecta el tipo real del documento, conserva los encabezados visibles y reconstruye las filas. Un segundo agente revisa la propuesta contra las mismas paginas y el texto OCR antes de pasarla por el quality gate.
+
+Los perfiles internos funcionan como pistas opcionales. No pueden reemplazar los encabezados visibles ni imponer columnas de otro documento, salvo cuando el administrador configura expresamente `forcedProfile`. Esto evita, por ejemplo, convertir una tabla de proveedores en columnas de movimiento de camiones.
+
+Variables:
+
+```env
+OCR_AGENTIC_TABLE_MODE="true"
+OCR_AGENTIC_TIMEOUT_SECONDS="90"
+OPENAI_AGENTIC_EXTRACTOR_MODEL="gpt-5.4-mini"
+OPENAI_AGENTIC_REVIEWER_MODEL="gpt-5.4-mini"
+OPENAI_AGENTIC_MAX_OUTPUT_TOKENS="16000"
+```
+
+La respuesta exitosa incluye el tipo detectado, encabezados reales, confianza, correcciones y advertencias. Se generan CSV y JSON como antes, y tambien un XLSX con celdas de texto para conservar CUIT, DNI, codigos y ceros iniciales.
+
 ## Instalación con pnpm
 
 Este proyecto usa `pnpm` y `pnpm-lock.yaml`. No volver a usar `package-lock.json` para este proyecto.

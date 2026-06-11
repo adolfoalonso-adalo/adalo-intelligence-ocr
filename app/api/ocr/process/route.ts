@@ -64,6 +64,7 @@ import {
   recordUsageEvent,
   type OcrPlanContext,
 } from "@/lib/usage";
+import { createXlsxBase64 } from "@/lib/xlsx-export";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -855,6 +856,11 @@ async function successResponse(
     forcedProfile?: string;
     restrictionMode?: ProfileRestrictionMode;
     restrictionReason?: string;
+    automaticReviewApplied?: boolean;
+    correctionsApplied?: string[];
+    detectedDocumentType?: string;
+    detectedHeaders?: string[];
+    documentTitle?: string;
   },
   startedAt: number,
   rateLimit: RateLimitResult,
@@ -873,6 +879,7 @@ async function successResponse(
   const extractionKind = resolveCsvFileKind(result, strategy, context);
   const fileName = createCsvFileName(extractionKind);
   const jsonFileName = fileName.replace(/\.csv$/i, ".json");
+  const xlsxFileName = fileName.replace(/\.csv$/i, ".xlsx");
   const parsedCsv = parseCsvPreview(result.csvContent);
   const columns = parsedCsv.columns;
   const rows = parsedCsv.rows.map((row) =>
@@ -880,12 +887,21 @@ async function successResponse(
   );
   const jsonColumns = result.jsonColumns ?? columns;
   const jsonRows = result.jsonRows ?? rows;
+  const xlsxContentBase64 = await createXlsxBase64({
+    columns,
+    rows,
+    sheetName: result.detectedDocumentType || "Resultados",
+  });
   const metadata = createExtractionMetadata({
     clientProfileId: result.profileCode ?? context.clientProfile?.id,
     accessMode: context.accessSession?.accessMode === "master" ? "master" : "client",
     isInternalTest: context.accessSession?.isInternalTest === true,
     durationMs,
-    documentType: context.clientProfile?.documentType,
+    automaticReviewApplied: result.automaticReviewApplied,
+    correctionsApplied: result.correctionsApplied,
+    detectedHeaders: result.detectedHeaders,
+    documentType:
+      result.detectedDocumentType ?? context.clientProfile?.documentType,
     extractionKind,
     extractionMode: result.extractionMode ?? context.clientProfile?.extractionMode,
     fields: columns.length,
@@ -937,6 +953,8 @@ async function successResponse(
       fileName,
       jsonContent: allowJsonExport ? jsonContent : undefined,
       jsonFileName: allowJsonExport ? jsonFileName : undefined,
+      xlsxContentBase64,
+      xlsxFileName,
       allowJsonExport,
       extractedRows: result.extractedRows,
       modelUsed: result.modelUsed,
@@ -944,6 +962,11 @@ async function successResponse(
       profileName: result.profileName ?? context.clientProfile?.label,
       extractionMode: result.extractionMode ?? context.clientProfile?.extractionMode,
       extractionType: result.extractionType ?? context.clientProfile?.userFacingExtractionType,
+      automaticReviewApplied: result.automaticReviewApplied,
+      correctionsApplied: result.correctionsApplied,
+      detectedDocumentType: result.detectedDocumentType,
+      detectedHeaders: result.detectedHeaders,
+      documentTitle: result.documentTitle,
       resultQuality: result.resultQuality,
       providerUsed: result.providerUsed,
       visualStructuringProvider: result.visualStructuringProvider,
@@ -970,6 +993,9 @@ async function successResponse(
 function resolveCsvFileKind(
   result: {
     csvContent: string;
+    detectedDocumentType?: string;
+    detectedHeaders?: string[];
+    extractionMode?: string;
     modelUsed: string;
     profileCode?: string;
     resultQuality?: "ai" | "partial" | "local-fallback";
@@ -981,6 +1007,21 @@ function resolveCsvFileKind(
   } = {},
 ): CsvFileKind {
   const modelUsed = result.modelUsed.toLowerCase();
+  const normalizedDetectedType = normalizeCsvHeaderForKind(
+    result.detectedDocumentType ?? "",
+  );
+  const normalizedDetectedHeaders = (result.detectedHeaders ?? []).map(
+    normalizeCsvHeaderForKind,
+  );
+
+  if (
+    normalizedDetectedType.includes("proveedor") ||
+    ["nombreempresa", "proveedor", "cuit", "servicioarea"].filter((column) =>
+      normalizedDetectedHeaders.includes(column),
+    ).length >= 3
+  ) {
+    return "PROVEEDORES";
+  }
 
   if (result.profileCode === "internal-nomina-personal") {
     return "NOMINA";
@@ -1000,6 +1041,10 @@ function resolveCsvFileKind(
 
   if (result.profileCode === "internal-tabla-administrativa") {
     return "LISTADO";
+  }
+
+  if (result.extractionMode === "agentic_document_table") {
+    return "TABLA_DOCUMENTAL";
   }
 
   if (result.resultQuality === "local-fallback" || modelUsed.includes("local pdf text fallback")) {

@@ -30,6 +30,10 @@ import {
   shouldAttemptOpenAiVisualFallback,
 } from "@/lib/openai-visual-structuring";
 import {
+  isAgenticTableModeEnabled,
+  runAgenticDocumentTableExtraction,
+} from "@/lib/agentic-table-extraction";
+import {
   applyProfileRestriction,
   automaticProfileRestriction,
   OCRProfileRestrictionError,
@@ -40,13 +44,18 @@ import {
 
 export type OrchestratedOCRResult = CsvAnalysisResult & {
   confidence?: number;
+  automaticReviewApplied?: boolean;
+  correctionsApplied?: string[];
+  detectedDocumentType?: string;
+  detectedHeaders?: string[];
+  documentTitle?: string;
   extractionType?: string;
   fallbackProvider?: OCRProviderName;
   pagesProcessed?: number;
   primaryProvider?: OCRProviderName;
   profileCode?: string;
   profileName?: string;
-  providerUsed?: OCRProviderName;
+  providerUsed?: string;
   qualityStatus?: OCRQualityStatus;
   rowsExtracted?: number;
   allowedProfiles?: string[];
@@ -134,6 +143,105 @@ export async function runOcrExtraction(input: {
     pagesProcessed: preprocessing.pagesProcessed,
     hasTableSignals: preprocessing.hasTableSignals,
   });
+
+  if (
+    isAgenticTableModeEnabled() &&
+    input.profileRestriction?.mode !== "forced_profile"
+  ) {
+    console.info("[OCR] agentic document table selected", {
+      fileName: input.fileName,
+      mimeType: input.mimeType,
+      profileHint: getClientProfileCode(internalProfile),
+      restrictionMode: input.profileRestriction?.mode ?? "automatic",
+    });
+
+    try {
+      const agenticResult = await runAgenticDocumentTableExtraction({
+        documentType: input.documentType,
+        fileBuffer: input.fileBuffer,
+        fileName: input.fileName,
+        mimeType: input.mimeType,
+        pagesProcessed: preprocessing.pagesProcessed,
+        preprocessing,
+        profile: internalProfile,
+        profileHint:
+          internalProfile.id === "internal-general"
+            ? undefined
+            : internalProfile.userFacingExtractionType ?? internalProfile.label,
+        rawTextContent: preprocessing.extractedText ?? "",
+      });
+      const agenticClassification = classifyInternalOCRProfile({
+        fileName: input.fileName,
+        hasTableSignals: agenticResult.detectedHeaders.length > 1,
+        restriction: input.profileRestriction,
+        text: [
+          preprocessing.extractedText ?? "",
+          agenticResult.detectedDocumentType,
+          ...agenticResult.detectedHeaders,
+        ].join("\n"),
+      });
+      const agenticProfile = agenticClassification.profile;
+      const agenticAssessment = assessOCRQuality(
+        agenticResult,
+        agenticProfile,
+        preprocessing,
+      );
+      const restrictionDecision = applyProfileRestriction(
+        agenticProfile,
+        input.profileRestriction,
+      );
+
+      logProfileRestrictionDecision(restrictionDecision);
+      logOCRQualityAssessment({
+        assessment: agenticAssessment,
+        profile: agenticProfile,
+        providerUsed: "openai-agentic",
+        rowsExtracted: agenticResult.extractedRows,
+      });
+
+      if (agenticAssessment.acceptable) {
+        return withRestrictionMetadata(
+          {
+            ...agenticResult,
+            confidence: agenticAssessment.confidence,
+            extractionType: agenticResult.detectedDocumentType,
+            fallbackProvider: fallbackProvider.name,
+            primaryProvider: primaryProvider.name,
+            profileCode: agenticProfile.id,
+            profileName: agenticProfile.label,
+            providerUsed: "openai-agentic",
+            qualityStatus: agenticAssessment.qualityStatus,
+            warnings: [
+              ...(agenticResult.warnings ?? []),
+              ...agenticAssessment.warnings,
+            ],
+          },
+          restrictionDecision,
+        );
+      }
+
+      console.warn("[OCR] agentic document table did not pass quality", {
+        confidence: agenticAssessment.confidence,
+        fileName: input.fileName,
+        reason: agenticAssessment.reason,
+        rowsExtracted: agenticResult.extractedRows,
+      });
+    } catch (agenticError) {
+      if (agenticError instanceof OCRProfileRestrictionError) {
+        throw agenticError;
+      }
+
+      console.warn("[OCR] agentic document table unavailable; continuing legacy flow", {
+        errorName:
+          agenticError instanceof Error ? agenticError.name : typeof agenticError,
+        fileName: input.fileName,
+        reason:
+          agenticError instanceof Error
+            ? sanitizeLogText(agenticError.message).slice(0, 180)
+            : "Unknown agentic extraction error",
+      });
+    }
+  }
 
   if (
     shouldPreferAdvancedProvider({
@@ -663,6 +771,8 @@ async function tryOpenAiVisualFallback(input: {
       documentType: input.input.documentType,
       fileBuffer: input.input.fileBuffer,
       fileName: input.input.fileName,
+      forceProfileColumns:
+        input.input.profileRestriction?.mode === "forced_profile",
       mimeType: input.input.mimeType,
       pagesProcessed: input.pagesProcessed,
       preprocessing: input.preprocessing,
